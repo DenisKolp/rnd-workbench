@@ -23,6 +23,8 @@ def test_full_and_compact_views_are_singleton_mutually_exclusive_windows() -> No
     assert "func presentFull()" in source
     assert "AssistantWindowBridge.captureFullFrame()" in source
     assert "window.isReleasedWhenClosed = false" in source
+    assert 'Label("Виджет", systemImage: "macwindow.on.rectangle")' in source
+    assert 'ViewThatFits(in: .horizontal)' not in source
 
 
 def test_composer_draft_is_shared_across_full_and_compact_states() -> None:
@@ -212,9 +214,12 @@ def test_java_action_journal_and_reconciliation_are_visible_in_settings() -> Non
     source = SWIFT_SOURCE.read_text(encoding="utf-8")
 
     assert "@Published private(set) var javaActionJournalReady = false" in source
+    assert "@Published private(set) var javaAutonomyPolicyReady = false" in source
     assert "@Published private(set) var actionRecoveryAttention = 0" in source
     assert 'javaActionJournalReady = bool(actionJournal["ready"])' in source
+    assert 'javaAutonomyPolicyReady = bool(actionJournal["autonomy_policy_ready"])' in source
     assert '"Защита внешних действий"' in source
+    assert "политика и защита от дублей активны" in source
     assert 'return "Нужна сверка: \\(actionRecoveryAttention)"' in source
 
 
@@ -422,7 +427,7 @@ def test_macos_build_links_global_input_frameworks_and_advances_build_number() -
     assert "--compress=zip-6" in build
     assert "verify_java_core_bridge.py" in build
     assert "--external-models-enabled" in build
-    assert "<string>15</string>" in plist
+    assert "<string>16</string>" in plist
 
 
 def test_macos_app_launches_bundled_java_policy_and_shows_safe_fallback() -> None:

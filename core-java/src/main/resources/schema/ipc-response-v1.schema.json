@@ -6,6 +6,7 @@
     { "$ref": "#/$defs/errorResponse" },
     { "$ref": "#/$defs/healthResponse" },
     { "$ref": "#/$defs/routeResponse" },
+    { "$ref": "#/$defs/autonomyResponse" },
     { "$ref": "#/$defs/meetingPackagePlanResponse" },
     { "$ref": "#/$defs/claimResponse" },
     { "$ref": "#/$defs/inspectResponse" },
@@ -148,6 +149,54 @@
               }
             }
           ]
+        }
+      }
+    },
+    "autonomyResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "ok", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "autonomy.decision" },
+        "correlationId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "ok": { "const": true },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "level",
+            "notificationRequired",
+            "undoRequired",
+            "previewRequired",
+            "explicitConfirmationRequired",
+            "reasonCode"
+          ],
+          "properties": {
+            "level": {
+              "enum": [
+                "ALLOW",
+                "ALLOW_WITH_NOTIFICATION_AND_UNDO",
+                "REQUIRE_PREVIEW",
+                "REQUIRE_EXPLICIT_CONFIRMATION"
+              ]
+            },
+            "notificationRequired": { "type": "boolean" },
+            "undoRequired": { "type": "boolean" },
+            "previewRequired": { "type": "boolean" },
+            "explicitConfirmationRequired": { "type": "boolean" },
+            "reasonCode": {
+              "enum": [
+                "pilot.allow",
+                "pilot.notify-and-undo",
+                "pilot.preview",
+                "pilot.explicit-confirmation"
+              ]
+            }
+          }
         }
       }
     },

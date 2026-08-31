@@ -949,6 +949,7 @@ final class BackendController: ObservableObject {
     @Published private(set) var javaCorePolicyConfigured = false
     @Published private(set) var javaCorePolicyReady = false
     @Published private(set) var javaActionJournalReady = false
+    @Published private(set) var javaAutonomyPolicyReady = false
     @Published private(set) var actionRecoveryAttention = 0
     @Published private(set) var dictationReviewSequence = 0
     @Published private(set) var presentationMode: AssistantPresentationMode = .full
@@ -1208,9 +1209,13 @@ final class BackendController: ObservableObject {
         if actionRecoveryAttention > 0 {
             return "Нужна сверка: \(actionRecoveryAttention)"
         }
-        return javaActionJournalReady
-            ? "Java 21 · защита от дублей активна"
-            : "Недоступен · внешние действия блокируются"
+        if javaActionJournalReady && javaAutonomyPolicyReady {
+            return "Java 21 · политика и защита от дублей активны"
+        }
+        if javaActionJournalReady {
+            return "Журнал Java 21 активен · политика резервная"
+        }
+        return "Недоступен · внешние действия блокируются"
     }
     var routeStatusHelp: String {
         if let routingFallbackMessage { return routingFallbackMessage }
@@ -3056,6 +3061,7 @@ final class BackendController: ObservableObject {
             javaCorePolicyReady = bool(javaPolicy["ready"])
             if let actionJournal = platform["java_action_journal"] as? [String: Any] {
                 javaActionJournalReady = bool(actionJournal["ready"])
+                javaAutonomyPolicyReady = bool(actionJournal["autonomy_policy_ready"])
                 if let recovery = actionJournal["recovery"] as? [String: Any] {
                     actionRecoveryAttention = Int(
                         number(recovery["requires_attention"]) ?? 0
@@ -3505,14 +3511,12 @@ struct AssistantWorkspaceView: View {
             Button {
                 controller.presentCompact()
             } label: {
-                ViewThatFits(in: .horizontal) {
-                    Label("Компактный режим", systemImage: "macwindow.on.rectangle")
-                    Label("Мини-режим", systemImage: "macwindow.on.rectangle")
-                }
+                Label("Виджет", systemImage: "macwindow.on.rectangle")
             }
             .buttonStyle(.bordered)
             .fixedSize(horizontal: true, vertical: false)
-            .help("Перейти в компактный режим")
+            .help("Перейти в компактный виджет")
+            .accessibilityLabel("Перейти в компактный виджет")
             Button { controller.newTask(); section = .tasks } label: { Label("Новая задача", systemImage: "plus") }.buttonStyle(.bordered).fixedSize(horizontal: true, vertical: false)
         }.padding(.horizontal, 18).padding(.vertical, 11).background(RnDTheme.panel)
     }

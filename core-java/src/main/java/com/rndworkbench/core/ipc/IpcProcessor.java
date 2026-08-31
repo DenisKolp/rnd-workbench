@@ -3,9 +3,11 @@ package com.rndworkbench.core.ipc;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.rndworkbench.core.autonomy.PilotAutonomyPolicy;
 import com.rndworkbench.core.ipc.contract.ActionClaimPayload;
 import com.rndworkbench.core.ipc.contract.ActionCompletionPayload;
 import com.rndworkbench.core.ipc.contract.ActionInspectionPayload;
+import com.rndworkbench.core.ipc.contract.AutonomyDecisionRequestPayload;
 import com.rndworkbench.core.ipc.contract.EmptyPayload;
 import com.rndworkbench.core.ipc.contract.HealthStatusPayload;
 import com.rndworkbench.core.ipc.contract.IpcRequestEnvelope;
@@ -34,6 +36,7 @@ public final class IpcProcessor {
 
     private final ObjectMapper mapper;
     private final PilotModelRoutingPolicy routingPolicy;
+    private final PilotAutonomyPolicy autonomyPolicy;
     private final ActionJournal journal;
     private final SynapseMeetingPackagePolicy meetingPackagePolicy;
 
@@ -43,6 +46,7 @@ public final class IpcProcessor {
     ) {
         this.routingPolicy = Objects.requireNonNull(routingPolicy, "routingPolicy");
         this.journal = Objects.requireNonNull(journal, "journal");
+        autonomyPolicy = new PilotAutonomyPolicy();
         meetingPackagePolicy = new SynapseMeetingPackagePolicy();
         mapper = IpcJson.createMapper();
     }
@@ -132,6 +136,7 @@ public final class IpcProcessor {
         return switch (request.type()) {
             case "health.check" -> health(request);
             case "route.decide" -> route(request);
+            case "autonomy.decide" -> autonomy(request);
             case "meeting.package.plan" -> meetingPackagePlan(request);
             case "action.claim" -> claim(request);
             case "action.inspect" -> inspect(request);
@@ -193,6 +198,19 @@ public final class IpcProcessor {
                         payload.requestFingerprint(),
                         request.correlationId()
                 ))
+        );
+    }
+
+    private IpcResponseEnvelope autonomy(IpcRequestEnvelope request)
+            throws JsonProcessingException {
+        AutonomyDecisionRequestPayload payload = mapper.treeToValue(
+                request.payload(),
+                AutonomyDecisionRequestPayload.class
+        );
+        return success(
+                "autonomy.decision",
+                request.correlationId(),
+                autonomyPolicy.decide(payload.actionKind())
         );
     }
 

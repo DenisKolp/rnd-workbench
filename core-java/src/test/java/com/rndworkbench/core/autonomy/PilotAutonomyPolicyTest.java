@@ -47,6 +47,7 @@ class PilotAutonomyPolicyTest {
                 policy.decide(ActionKind.SEND_MESSAGE_OR_EMAIL).level()
         );
         assertTrue(policy.decide(ActionKind.ASSIGN_WORK_ITEM).previewRequired());
+        assertTrue(policy.decide(ActionKind.EXTERNAL_WRITE).previewRequired());
     }
 
     @Test

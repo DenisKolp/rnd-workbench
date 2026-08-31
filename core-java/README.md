@@ -3,9 +3,9 @@
 Инкрементальный платформенно-независимый слой доменных политик RnD Workbench.
 Модуль не заменяет существующее приложение и не переносит ML inference в JVM.
 Версия компонента — `0.1.0-SNAPSHOT`; он разрабатывается в рамках продуктового
-milestone `0.9.2` и не является отдельным релизом. Windows Electron и macOS
-Swift packages уже используют его для model routing и durable action journal,
-а production-коннекторы остаются следующим этапом миграции.
+milestone `0.9.8` и не является отдельным релизом. Windows Electron и macOS
+Swift packages уже используют его для model routing, autonomy gate и durable
+action journal, а production-коннекторы остаются следующим этапом миграции.
 
 ## Что уже зафиксировано кодом
 
@@ -20,8 +20,8 @@ Swift packages уже используют его для model routing и durabl
 - глубокая неизменяемая копия параметров и запрет передачи секретов в payload;
 - исполняемый локальный процесс с версионированным UTF-8 JSONL stdio-контрактом
   `1.0`, строгой валидацией полей и детерминированным JSON;
-- команды `health.check`, `route.decide`, `meeting.package.plan`, `action.claim`,
-  `action.inspect` и `action.complete`;
+- команды `health.check`, `route.decide`, `autonomy.decide`,
+  `meeting.package.plan`, `action.claim`, `action.inspect` и `action.complete`;
 - платформенно-независимый контракт локального пакета встречи eXpress
   (legacy alias `synapse`) с
   fingerprint, provenance checkpoint и честным запретом заявлять live API;
@@ -64,7 +64,7 @@ cd core-java
 gradle test
 ```
 
-Сборка настроена с `-Xlint:all -Werror`. Все 44 JUnit-теста прошли локально на
+Сборка настроена с `-Xlint:all -Werror`. Все 45 JUnit-тестов прошли локально на
 JDK 21.0.12 и Gradle 9.7.1. Linux CI повторяет тесты и реальный Python ↔ Java
 golden contract; macOS и Windows CI собирают ограниченные `jlink` runtime.
 macOS проверяет local/corporate/public-external маршруты, Windows затем запускает
@@ -73,7 +73,8 @@ route gate и полный безопасный action journal lifecycle из fr
 ## Следующий инкремент
 
 1. Подключить первые production-коннекторы Jira/Kaiten/Confluence/почты/календаря
-   к уже работающему Java claim/inspect/result boundary и их idempotency lookup.
+   к уже работающим autonomy и claim/inspect/result boundaries и их idempotency
+   lookup.
 2. Провести crash/restart и multi-device reconciliation soak-test на тестовых
    корпоративных стендах.
 3. После pilot soak-test удалить дублирующую Python routing policy.

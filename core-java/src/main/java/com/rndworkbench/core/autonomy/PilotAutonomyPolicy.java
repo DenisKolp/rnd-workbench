@@ -33,6 +33,7 @@ public final class PilotAutonomyPolicy {
         preview(result, ActionKind.UPSERT_CALENDAR_EVENT);
         preview(result, ActionKind.ASSIGN_WORK_ITEM);
         preview(result, ActionKind.UPSERT_KNOWLEDGE_PAGE);
+        preview(result, ActionKind.EXTERNAL_WRITE);
 
         explicit(result, ActionKind.DELETE_DATA);
         explicit(result, ActionKind.MASS_OPERATION);

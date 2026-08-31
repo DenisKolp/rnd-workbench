@@ -39,6 +39,26 @@ for line in sys.stdin:
             "localFallbackBeforeFirstOutput": route == "CORPORATE",
         }
         response_type = "route.decision"
+    elif request["type"] == "autonomy.decide":
+        kind = request["payload"]["actionKind"]
+        if kind in {"DELETE_DATA", "MASS_OPERATION", "CHANGE_PERMISSIONS", "PUBLISH_EXTERNAL", "IRREVERSIBLE_HIGH_RISK"}:
+            level = "REQUIRE_EXPLICIT_CONFIRMATION"
+            reason = "pilot.explicit-confirmation"
+        elif kind in {"READ_CONTEXT", "SEARCH_AND_ANALYZE", "TRANSCRIBE_AUDIO", "UPDATE_WORKING_MEMORY", "CREATE_DRAFT", "SELECT_MODEL"}:
+            level = "ALLOW"
+            reason = "pilot.allow"
+        else:
+            level = "REQUIRE_PREVIEW"
+            reason = "pilot.preview"
+        payload = {
+            "level": level,
+            "notificationRequired": level != "ALLOW",
+            "undoRequired": False,
+            "previewRequired": level != "ALLOW",
+            "explicitConfirmationRequired": level == "REQUIRE_EXPLICIT_CONFIRMATION",
+            "reasonCode": reason,
+        }
+        response_type = "autonomy.decision"
     elif request["type"] == "action.claim":
         payload = {
             "disposition": "CLAIMED",
@@ -104,6 +124,7 @@ def test_java_core_client_health_and_route_golden_contract(tmp_path: Path) -> No
         "ready": True,
         "protocol_version": "1.0",
         "policy": "java21",
+        "autonomy_policy_ready": True,
     }
 
     decision = client.decide_route(
@@ -117,6 +138,13 @@ def test_java_core_client_health_and_route_golden_contract(tmp_path: Path) -> No
     assert decision.route == "CORPORATE"
     assert decision.reason == "CORPORATE_SELECTED"
     assert decision.local_fallback_before_first_output is True
+    autonomy = client.decide_autonomy(action_kind="ASSIGN_WORK_ITEM")
+    assert autonomy.level == "REQUIRE_PREVIEW"
+    assert autonomy.notification_required is True
+    assert autonomy.undo_required is False
+    assert autonomy.preview_required is True
+    assert autonomy.explicit_confirmation_required is False
+    assert autonomy.reason_code == "pilot.preview"
     client.close()
 
     frames = [
@@ -145,6 +173,12 @@ def test_java_core_client_health_and_route_golden_contract(tmp_path: Path) -> No
             "explicitExternalConsent": False,
         },
     }
+    assert frames[2] == {
+        "version": "1.0",
+        "type": "autonomy.decide",
+        "correlationId": "desktop-3",
+        "payload": {"actionKind": "ASSIGN_WORK_ITEM"},
+    }
     serialized = json.dumps(frames, ensure_ascii=False)
     assert "prompt" not in serialized.casefold()
     assert "transcript" not in serialized.casefold()
@@ -156,6 +190,33 @@ def test_java_core_client_rejects_invalid_response_envelope(tmp_path: Path) -> N
     client = fake_client(tmp_path, invalid_core)
     assert client.start() is False
     assert client.ready is False
+
+
+def test_java_core_client_rejects_inconsistent_autonomy_decision(tmp_path: Path) -> None:
+    invalid_core = FAKE_CORE.replace(
+        '"notificationRequired": level != "ALLOW"',
+        '"notificationRequired": False',
+    )
+    client = fake_client(tmp_path, invalid_core)
+    assert client.start() is True
+
+    with pytest.raises(JavaCoreProtocolError, match="autonomy"):
+        client.decide_autonomy(action_kind="ASSIGN_WORK_ITEM")
+    client.close()
+
+
+def test_java_core_client_rejects_unknown_autonomy_action_before_ipc(
+    tmp_path: Path,
+) -> None:
+    client = fake_client(tmp_path)
+    assert client.start() is True
+
+    with pytest.raises(ValueError, match="action kind"):
+        client.decide_autonomy(action_kind="SEND_WITHOUT_CONFIRMATION")
+    client.close()
+
+    frames = (tmp_path / "actions.frames").read_text(encoding="utf-8").splitlines()
+    assert len(frames) == 1
 
 
 def test_java_core_action_journal_contract_transmits_only_safe_metadata(

@@ -382,6 +382,8 @@ def test_windows_approval_center_exposes_safe_action_state_and_commands() -> Non
     assert "function renderApprovals()" in renderer
     assert 'sendCommand("resolve_approval"' in renderer
     assert "java_action_journal" in renderer
+    assert "actionJournal.autonomy_policy_ready" in renderer
+    assert "проверяет политику действий" in renderer
     assert "сверк" in renderer.casefold()
     assert ".approval-actions" in styles
 
@@ -403,6 +405,8 @@ def test_windows_full_window_imports_express_transcript_or_package_through_trust
     assert 'ipcMain.handle("meeting:choose-audio"' in main
     assert 'ipcRenderer.invoke("meeting:choose-audio")' in preload
     assert 'id="meetingAudioImportButton"' in html
+    assert '>Аудиозапись</button>' in html
+    assert '"Аудиозапись"' in renderer
     assert 'id="meetingTranscriptImportButton"' in html
     assert 'id="synapseImportButton"' in html
     assert '>ZIP с контекстом</button>' in html
@@ -416,6 +420,17 @@ def test_windows_full_window_imports_express_transcript_or_package_through_trust
     assert 'case "meeting_audio_import_error":' in renderer
     assert 'case "synapse_package_imported":' in renderer
     assert 'case "synapse_package_import_error":' in renderer
+
+
+def test_renderer_uses_short_mode_copy_and_safe_local_settings_default() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+
+    assert '>Развернуть</button>' in html
+    assert 'mode === "compact" ? "Развернуть" : "Виджет"' in renderer
+    assert '"Развернуть в полное окно"' in renderer
+    assert '"Перейти в компактный виджет"' in renderer
+    assert 'providerType === "corporate" ? "corporate" : "local"' in renderer
 
 
 def test_renderer_element_references_are_present_and_ids_are_unique() -> None:

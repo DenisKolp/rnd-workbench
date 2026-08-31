@@ -44,6 +44,7 @@ def main() -> None:
             corporate_available=True,
             corporate_scope_authorized=True,
         )
+        autonomy = client.decide_autonomy(action_kind="ASSIGN_WORK_ITEM")
         external = (
             client.decide_route(
                 classification="public",
@@ -112,6 +113,17 @@ def main() -> None:
                 ),
                 "content_transmitted": False,
             },
+            "autonomy": {
+                "level": autonomy.level,
+                "notification_required": autonomy.notification_required,
+                "undo_required": autonomy.undo_required,
+                "preview_required": autonomy.preview_required,
+                "explicit_confirmation_required": (
+                    autonomy.explicit_confirmation_required
+                ),
+                "reason_code": autonomy.reason_code,
+                "content_transmitted": False,
+            },
             "content_transmitted": False,
         }
         if external is not None:
@@ -144,6 +156,15 @@ def main() -> None:
                 "completion": "RECORDED",
                 "replay": "REPLAY",
                 "result_code": "VERIFY.SUCCESS",
+                "content_transmitted": False,
+            },
+            "autonomy": {
+                "level": "REQUIRE_PREVIEW",
+                "notification_required": True,
+                "undo_required": False,
+                "preview_required": True,
+                "explicit_confirmation_required": False,
+                "reason_code": "pilot.preview",
                 "content_transmitted": False,
             },
             "content_transmitted": False,

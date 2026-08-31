@@ -844,6 +844,11 @@ class WindowsPilotBackend:
         self.integration_hub = SafeIntegrationHub(
             self.store,
             action_journal=self._core_policy,
+            autonomy_policy=(
+                self._core_policy
+                if callable(getattr(self._core_policy, "decide_autonomy", None))
+                else None
+            ),
         )
         self._action_recovery: dict[str, int | bool] = {
             "journal_ready": False,

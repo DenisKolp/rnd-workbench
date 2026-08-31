@@ -11,7 +11,9 @@ from typing import Any, Mapping, Protocol
 
 from .java_core import (
     ActionJournalRuntime,
+    AutonomyPolicyRuntime,
     JavaActionExecution,
+    JavaAutonomyDecision,
     JavaCoreProtocolError,
     JavaCoreUnavailable,
 )
@@ -177,17 +179,61 @@ class SafeIntegrationHub:
         store: AssistantStore,
         *,
         action_journal: ActionJournalRuntime | None = None,
+        autonomy_policy: AutonomyPolicyRuntime | None = None,
     ) -> None:
         self.store = store
         self.action_journal = action_journal
+        self.autonomy_policy = autonomy_policy
         self._adapters: dict[str, IntegrationAdapter] = {}
 
     def action_journal_diagnostics(self) -> dict[str, Any]:
         journal = self.action_journal
+        autonomy = self.autonomy_policy
+        autonomy_ready = bool(autonomy and getattr(autonomy, "ready", False))
         return {
             "configured": bool(journal and getattr(journal, "configured", False)),
             "ready": bool(journal and getattr(journal, "ready", False)),
+            "autonomy_policy_configured": bool(
+                autonomy and getattr(autonomy, "configured", False)
+            ),
+            "autonomy_policy_ready": autonomy_ready,
+            "autonomy_policy": "java21" if autonomy_ready else "python_fallback",
             "production_fail_closed": True,
+            "content_transmitted": False,
+        }
+
+    def _resolve_action_policy(
+        self,
+        request: IntegrationRequest,
+    ) -> tuple[ActionPolicy, dict[str, Any]]:
+        policy = action_policy(request.intent)
+        action_kind = _java_action_kind(request)
+        fallback = {
+            "engine": "python_fallback",
+            "action_kind": action_kind,
+            "reason_code": "java_unavailable",
+            "content_transmitted": False,
+        }
+        runtime = self.autonomy_policy
+        if runtime is None or not bool(getattr(runtime, "ready", False)):
+            return policy, fallback
+        try:
+            decision = runtime.decide_autonomy(action_kind=action_kind)
+        except JavaCoreUnavailable:
+            return policy, fallback
+        except (AttributeError, JavaCoreProtocolError, TypeError, ValueError) as exc:
+            raise IntegrationUnavailable(
+                "Java core вернул некорректную политику автономности; действие заблокировано"
+            ) from exc
+        if not _autonomy_decision_matches(policy, decision):
+            raise IntegrationUnavailable(
+                "Политики автономности Java и приложения расходятся; действие заблокировано"
+            )
+        return policy, {
+            "engine": "java21",
+            "action_kind": action_kind,
+            "level": decision.level,
+            "reason_code": decision.reason_code,
             "content_transmitted": False,
         }
 
@@ -204,6 +250,7 @@ class SafeIntegrationHub:
         request = request.normalized()
         if request.intent is not IntegrationIntent.READ:
             raise ValueError("Через read допустимы только операции чтения")
+        self._resolve_action_policy(request)
         adapter = self._adapter(request.system)
         _assert_classification_allowed(request.classification, adapter)
         result = adapter.read(request.operation, request.payload)
@@ -222,6 +269,7 @@ class SafeIntegrationHub:
         request = request.normalized()
         if request.intent is not IntegrationIntent.DRAFT:
             raise ValueError("Через draft допустима только подготовка черновика")
+        self._resolve_action_policy(request)
         adapter = self._adapter(request.system)
         _assert_classification_allowed(request.classification, adapter)
         preview = adapter.draft(request.operation, request.payload)
@@ -247,7 +295,7 @@ class SafeIntegrationHub:
         origin: str = "assistant",
     ) -> dict[str, Any]:
         request = request.normalized()
-        policy = action_policy(request.intent)
+        policy, autonomy_policy = self._resolve_action_policy(request)
         if not policy.requires_preview:
             raise ValueError("Чтение и черновики не нужно помещать в согласования")
         adapter = self._adapters.get(request.system)
@@ -266,6 +314,7 @@ class SafeIntegrationHub:
             "preview": preview.as_dict(),
             "classification": request.classification,
             "production_connector": bool(adapter and adapter.production),
+            "autonomy_policy": autonomy_policy,
         }
         title = request.title or preview.title or (
             f"{request.system}: {request.operation}"
@@ -332,6 +381,19 @@ class SafeIntegrationHub:
             raise ValueError("Параметры внешнего действия повреждены")
         _reject_secrets(parameters)
         classification = normalize_classification(payload.get("classification"))
+        try:
+            intent = IntegrationIntent(str(payload.get("intent") or ""))
+        except ValueError as exc:
+            raise ValueError("Тип внешнего действия повреждён") from exc
+        self._resolve_action_policy(
+            IntegrationRequest(
+                system=system,
+                operation=operation,
+                intent=intent,
+                payload=parameters,
+                classification=classification,
+            )
+        )
         adapter = self._adapters.get(system)
         if adapter is None:
             message = f"Интеграция {system} не подключена; действие не выполнено"
@@ -998,6 +1060,59 @@ def _identifier(value: Any, label: str, *, allow_dot: bool = False) -> str:
     if not normalized or re.fullmatch(pattern, normalized) is None:
         raise ValueError(f"{label} задана некорректно")
     return normalized
+
+
+def _java_action_kind(request: IntegrationRequest) -> str:
+    if request.intent is IntegrationIntent.READ:
+        return "READ_CONTEXT"
+    if request.intent is IntegrationIntent.DRAFT:
+        return "CREATE_DRAFT"
+    if request.intent is IntegrationIntent.PUBLISH:
+        return "PUBLISH_EXTERNAL"
+    if request.intent is IntegrationIntent.DELETE:
+        return "DELETE_DATA"
+    if request.intent is IntegrationIntent.PERMISSIONS:
+        return "CHANGE_PERMISSIONS"
+    if request.intent is IntegrationIntent.MASS:
+        return "MASS_OPERATION"
+    if request.intent is not IntegrationIntent.WRITE:
+        raise ValueError("Неизвестный тип автономного действия")
+    if request.system in {"email", "mail", "messenger", "express"}:
+        return "SEND_MESSAGE_OR_EMAIL"
+    if request.system == "calendar":
+        return "UPSERT_CALENDAR_EVENT"
+    if request.system in {"jira", "kaiten"}:
+        return "ASSIGN_WORK_ITEM"
+    if request.system == "confluence":
+        return "UPSERT_KNOWLEDGE_PAGE"
+    return "EXTERNAL_WRITE"
+
+
+def _autonomy_decision_matches(
+    policy: ActionPolicy,
+    decision: JavaAutonomyDecision,
+) -> bool:
+    expected_level = (
+        "ALLOW"
+        if policy.user_policy == "none"
+        else "REQUIRE_PREVIEW"
+        if policy.user_policy == "preview"
+        else "REQUIRE_EXPLICIT_CONFIRMATION"
+    )
+    expected_reason = {
+        "ALLOW": "pilot.allow",
+        "REQUIRE_PREVIEW": "pilot.preview",
+        "REQUIRE_EXPLICIT_CONFIRMATION": "pilot.explicit-confirmation",
+    }[expected_level]
+    return (
+        decision.level == expected_level
+        and decision.notification_required == (expected_level != "ALLOW")
+        and decision.undo_required is False
+        and decision.preview_required == policy.requires_preview
+        and decision.explicit_confirmation_required
+        == (expected_level == "REQUIRE_EXPLICIT_CONFIRMATION")
+        and decision.reason_code == expected_reason
+    )
 
 
 def _execution_lock(store: AssistantStore, idempotency_key: str) -> Any:

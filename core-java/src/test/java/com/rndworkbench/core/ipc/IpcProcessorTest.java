@@ -44,6 +44,27 @@ class IpcProcessorTest {
     }
 
     @Test
+    void autonomyDecisionContainsOnlyTheActionPolicy() {
+        String response = processor.process("""
+                {"version":"1.0","type":"autonomy.decide","correlationId":"policy-1","payload":{"actionKind":"ASSIGN_WORK_ITEM"}}
+                """.strip());
+
+        assertEquals(
+                "{\"correlationId\":\"policy-1\",\"ok\":true,\"payload\":{"
+                        + "\"explicitConfirmationRequired\":false,"
+                        + "\"level\":\"REQUIRE_PREVIEW\","
+                        + "\"notificationRequired\":true,"
+                        + "\"previewRequired\":true,"
+                        + "\"reasonCode\":\"pilot.preview\","
+                        + "\"undoRequired\":false},"
+                        + "\"type\":\"autonomy.decision\",\"version\":\"1.0\"}",
+                response
+        );
+        assertFalse(response.contains("payloadText"));
+        assertFalse(response.contains("assignee"));
+    }
+
+    @Test
     void duplicateAndUnknownEnvelopeFieldsAreRejected() {
         String duplicate = processor.process("""
                 {"version":"1.0","version":"1.0","type":"health.check","correlationId":"req-2","payload":{}}
@@ -79,10 +100,15 @@ class IpcProcessorTest {
         String unknown = processor.process("""
                 {"version":"1.0","type":"health.check","correlationId":"req-6","payload":{"secret":"must-not-echo"}}
                 """.strip());
+        String unknownAction = processor.process("""
+                {"version":"1.0","type":"autonomy.decide","correlationId":"req-6a","payload":{"actionKind":"SEND_WITHOUT_CONFIRMATION"}}
+                """.strip());
 
         assertTrue(missing.contains("\"code\":\"INVALID_PAYLOAD\""));
         assertTrue(unknown.contains("\"code\":\"INVALID_PAYLOAD\""));
         assertFalse(unknown.contains("must-not-echo"));
+        assertTrue(unknownAction.contains("\"code\":\"INVALID_PAYLOAD\""));
+        assertFalse(unknownAction.contains("SEND_WITHOUT_CONFIRMATION"));
     }
 
     @Test

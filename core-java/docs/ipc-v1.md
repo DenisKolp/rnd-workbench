@@ -62,6 +62,30 @@ frame:
 Внешний route всё равно проверяет `PUBLIC`, explicit consent и process flag
 `--external-models-enabled`. Флаг по умолчанию выключен.
 
+## Политика автономности
+
+`autonomy.decide` принимает только категорию действия. Текст письма, задачи,
+страницы, встречи или документа, адресаты, идентификаторы и credentials через
+этот IPC не проходят.
+
+```json
+{"version":"1.0","type":"autonomy.decide","correlationId":"policy-42","payload":{"actionKind":"ASSIGN_WORK_ITEM"}}
+```
+
+```json
+{"correlationId":"policy-42","ok":true,"payload":{"explicitConfirmationRequired":false,"level":"REQUIRE_PREVIEW","notificationRequired":false,"previewRequired":true,"reasonCode":"pilot.preview","undoRequired":false},"type":"autonomy.decision","version":"1.0"}
+```
+
+Поддерживаются `READ_CONTEXT`, `CREATE_DRAFT`, `INTERNAL_MUTATION`,
+`SEND_MESSAGE_OR_EMAIL`, `UPSERT_CALENDAR_EVENT`, `ASSIGN_WORK_ITEM`,
+`UPSERT_KNOWLEDGE_PAGE`, `PUBLISH_EXTERNAL`, `DELETE_DATA`,
+`CHANGE_PERMISSIONS`, `MASS_OPERATION` и резервная категория
+`EXTERNAL_WRITE`. Python integration hub независимо вычисляет ожидаемое
+решение и требует точного совпадения всех флагов и reason code при создании
+предпросмотра и повторно непосредственно перед connector call. Несовпадение
+блокирует действие до adapter/connector; недоступность Java включает видимый
+безопасный Python fallback.
+
 ## План локального импорта встречи eXpress (Синапс)
 
 `meeting.package.plan` проверяет платформенно-независимую часть manifest и
@@ -153,7 +177,8 @@ lease expiry нет, поскольку оно создало бы риск ду
 
 Обязательный аргумент `--journal` задаёт отдельный SQLite-файл профиля. macOS и
 Windows Python backend запускают процесс для metadata-only `health.check`,
-`route.decide`, `action.claim`, `action.inspect` и `action.complete`;
+`route.decide`, `autonomy.decide`, `action.claim`, `action.inspect` и
+`action.complete`;
 Swift/Electron получают только безопасную диагностику. Публичный
 внешний маршрут на macOS дополнительно требует process opt-in, классификацию
 `PUBLIC` и explicit consent в каждом запросе. Production-коннекторы ещё не

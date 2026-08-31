@@ -771,6 +771,9 @@ def test_macos_snapshot_exposes_visible_java_policy_fallback(capsys, tmp_path) -
         "java_action_journal": {
             "configured": True,
             "ready": False,
+            "autonomy_policy_configured": False,
+            "autonomy_policy_ready": False,
+            "autonomy_policy": "python_fallback",
             "production_fail_closed": True,
             "content_transmitted": False,
             "recovery": {

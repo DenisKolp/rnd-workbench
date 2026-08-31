@@ -47,9 +47,10 @@ Swift, пока нативный voice path даёт преимущество п
                     └───────────────────┘
 ```
 
-Это целевая граница, а не заявление о том, что существующие Swift/Python вызовы
-уже мигрировали. Внедрение идёт вертикальными инкрементами с контрактными тестами
-и временным fallback на текущий путь.
+Маршрутизация модели, решение об автономности и журнал внешних действий уже
+подключены к обеим desktop-оболочкам через Python bridge. Внедрение остальных
+правил продолжается вертикальными инкрементами с контрактными тестами и видимым
+безопасным fallback.
 
 ## Почему голосовой тракт остаётся вне Java core
 
@@ -119,6 +120,14 @@ credentials: только key, fingerprint, correlation, claim token, timestamps
 API-ключи, cookies, пароли и bearer tokens не входят в envelope. Их получает
 коннектор из системного vault/credential manager.
 
+При формировании preview/approval и повторно непосредственно перед connector
+call общий Python integration hub вызывает `autonomy.decide`, передавая только
+vendor-neutral `actionKind`. Он независимо считает тот же уровень по встроенной
+таблице и сравнивает все флаги. Любое расхождение означает ошибку политики и
+блокирует adapter до side effect.
+Недоступный Java companion включает безопасный Python fallback и отражается в
+диагностике, но не ослабляет уровень согласования.
+
 ## Формат связи
 
 Реализован executable Java-процесс с UTF-8 JSONL stdio framing: он не открывает
@@ -127,8 +136,8 @@ API-ключи, cookies, пароли и bearer tokens не входят в enve
 неизвестная версия или команда отклоняются безопасной ошибкой без отражения
 входного content. Размер line, JSON string и nesting ограничены.
 
-Публичный контракт включает `route.decide`, `action.claim`, `action.inspect`,
-`action.complete` и `health.check`; JSON Schema находятся в
+Публичный контракт включает `route.decide`, `autonomy.decide`, `action.claim`,
+`action.inspect`, `action.complete` и `health.check`; JSON Schema находятся в
 `core-java/src/main/resources/schema`, а
 правила и примеры — в `core-java/docs/ipc-v1.md`. JSON сериализуется
 детерминированно: свойства и map keys сортируются, dates имеют ISO-8601 вид.
@@ -148,8 +157,9 @@ Loopback transport остаётся допустимым будущим вари
 
 Ограничения:
 
-- macOS/Windows Python bridge использует Java core для routing и durable
-  claim/inspect/result; production-коннекторы и их API пока не подключены;
+- macOS/Windows Python bridge использует Java core для routing, autonomy и
+  durable claim/inspect/result; production-коннекторы и их API пока не
+  подключены;
 - обе desktop-сборки выросли из-за bundled `jlink` runtime и Java libraries;
 - версия схемы и совместимость процессов становятся отдельным контрактом;
 - SQLite journal не может атомарно коммитить транзакцию вместе с произвольным
@@ -157,7 +167,8 @@ Loopback transport остаётся допустимым будущим вари
 
 ## План внедрения
 
-1. Подключить production-коннекторы к готовому claim/inspect/result boundary и
-   реализовать их idempotency lookup на корпоративных тестовых стендах.
+1. Подключить production-коннекторы к готовым autonomy и
+   claim/inspect/result boundaries и реализовать их idempotency lookup на
+   корпоративных тестовых стендах.
 2. Провести crash/restart reconciliation soak-test до production writes.
 3. После пилотного soak-test удалить дублирующие политики из оболочек.

@@ -97,9 +97,18 @@ class UIBackend:
         self.integration_hub = integration_hub or SafeIntegrationHub(
             self.store,
             action_journal=self._core_policy,
+            autonomy_policy=(
+                self._core_policy
+                if callable(getattr(self._core_policy, "decide_autonomy", None))
+                else None
+            ),
         )
         if self.integration_hub.action_journal is None:
             self.integration_hub.action_journal = self._core_policy
+        if self.integration_hub.autonomy_policy is None and callable(
+            getattr(self._core_policy, "decide_autonomy", None)
+        ):
+            self.integration_hub.autonomy_policy = self._core_policy
         self._action_recovery: dict[str, int | bool] = {
             "journal_ready": False,
             "inspected": 0,

@@ -39,6 +39,44 @@ _INSPECTION_DISPOSITIONS = frozenset(
 _COMPLETION_DISPOSITIONS = frozenset(
     {"RECORDED", "REPLAY", "NOT_CLAIMED", "CONFLICT"}
 )
+_AUTONOMY_LEVELS = frozenset(
+    {
+        "ALLOW",
+        "ALLOW_WITH_NOTIFICATION_AND_UNDO",
+        "REQUIRE_PREVIEW",
+        "REQUIRE_EXPLICIT_CONFIRMATION",
+    }
+)
+_AUTONOMY_REASONS = {
+    "ALLOW": "pilot.allow",
+    "ALLOW_WITH_NOTIFICATION_AND_UNDO": "pilot.notify-and-undo",
+    "REQUIRE_PREVIEW": "pilot.preview",
+    "REQUIRE_EXPLICIT_CONFIRMATION": "pilot.explicit-confirmation",
+}
+_AUTONOMY_ACTION_KINDS = frozenset(
+    {
+        "READ_CONTEXT",
+        "SEARCH_AND_ANALYZE",
+        "TRANSCRIBE_AUDIO",
+        "UPDATE_WORKING_MEMORY",
+        "CREATE_DRAFT",
+        "SELECT_MODEL",
+        "UPDATE_PERSONAL_TASK",
+        "UPDATE_INTERNAL_MATERIAL",
+        "CLASSIFY_WORKSPACE_CONTENT",
+        "RUN_PREAUTHORIZED_AUTOMATION",
+        "SEND_MESSAGE_OR_EMAIL",
+        "UPSERT_CALENDAR_EVENT",
+        "ASSIGN_WORK_ITEM",
+        "UPSERT_KNOWLEDGE_PAGE",
+        "EXTERNAL_WRITE",
+        "DELETE_DATA",
+        "MASS_OPERATION",
+        "CHANGE_PERMISSIONS",
+        "PUBLISH_EXTERNAL",
+        "IRREVERSIBLE_HIGH_RISK",
+    }
+)
 _SAFE_ACTION_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,199}\Z")
 _FINGERPRINT = re.compile(r"[a-f0-9]{64}\Z")
 _CLAIM_TOKEN = re.compile(
@@ -63,6 +101,16 @@ class JavaRouteDecision:
     route: str | None
     reason: str
     local_fallback_before_first_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class JavaAutonomyDecision:
+    level: str
+    notification_required: bool
+    undo_required: bool
+    preview_required: bool
+    explicit_confirmation_required: bool
+    reason_code: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +177,16 @@ class ActionJournalRuntime(Protocol):
     ) -> JavaActionCompletion: ...
 
 
+class AutonomyPolicyRuntime(Protocol):
+    @property
+    def configured(self) -> bool: ...
+
+    @property
+    def ready(self) -> bool: ...
+
+    def decide_autonomy(self, *, action_kind: str) -> JavaAutonomyDecision: ...
+
+
 class CorePolicyRuntime(Protocol):
     @property
     def configured(self) -> bool: ...
@@ -151,6 +209,8 @@ class CorePolicyRuntime(Protocol):
         corporate_scope_authorized: bool = False,
         explicit_external_consent: bool = False,
     ) -> JavaRouteDecision: ...
+
+    def decide_autonomy(self, *, action_kind: str) -> JavaAutonomyDecision: ...
 
     def close(self) -> None: ...
 
@@ -272,6 +332,7 @@ class JavaCorePolicyClient:
             "ready": self.ready,
             "protocol_version": PROTOCOL_VERSION if self.ready else None,
             "policy": "java21" if self.ready else "python_fallback",
+            "autonomy_policy_ready": self.ready,
         }
 
     def start(self) -> bool:
@@ -382,6 +443,61 @@ class JavaCorePolicyClient:
         ):
             raise JavaCoreProtocolError("Java route decision is invalid")
         return JavaRouteDecision(status, route, reason, fallback)
+
+    def decide_autonomy(self, *, action_kind: str) -> JavaAutonomyDecision:
+        normalized_kind = action_kind.strip().upper()
+        if normalized_kind not in _AUTONOMY_ACTION_KINDS:
+            raise ValueError("Unsupported autonomy action kind")
+        response = self._request(
+            "autonomy.decide",
+            {"actionKind": normalized_kind},
+            expected_type="autonomy.decision",
+        )
+        payload = response.get("payload")
+        expected_keys = {
+            "level",
+            "notificationRequired",
+            "undoRequired",
+            "previewRequired",
+            "explicitConfirmationRequired",
+            "reasonCode",
+        }
+        if not isinstance(payload, dict) or set(payload) != expected_keys:
+            raise JavaCoreProtocolError("Java autonomy payload is invalid")
+        level = payload.get("level")
+        notification = payload.get("notificationRequired")
+        undo = payload.get("undoRequired")
+        preview = payload.get("previewRequired")
+        explicit = payload.get("explicitConfirmationRequired")
+        reason = payload.get("reasonCode")
+        if (
+            level not in _AUTONOMY_LEVELS
+            or not all(isinstance(value, bool) for value in (notification, undo, preview, explicit))
+            or reason != _AUTONOMY_REASONS.get(level)
+            or (undo and not notification)
+            or (level == "ALLOW" and any((notification, undo, preview, explicit)))
+            or (
+                level == "ALLOW_WITH_NOTIFICATION_AND_UNDO"
+                and (not notification or not undo or preview or explicit)
+            )
+            or (
+                level == "REQUIRE_PREVIEW"
+                and (not notification or undo or not preview or explicit)
+            )
+            or (
+                level == "REQUIRE_EXPLICIT_CONFIRMATION"
+                and (not notification or undo or not preview or not explicit)
+            )
+        ):
+            raise JavaCoreProtocolError("Java autonomy decision is invalid")
+        return JavaAutonomyDecision(
+            level=level,
+            notification_required=notification,
+            undo_required=undo,
+            preview_required=preview,
+            explicit_confirmation_required=explicit,
+            reason_code=reason,
+        )
 
     def claim_action(
         self,

@@ -20,6 +20,7 @@ from voice_assistant.java_core import (
     JavaActionCompletion,
     JavaActionExecution,
     JavaActionInspection,
+    JavaAutonomyDecision,
     JavaCoreUnavailable,
 )
 from voice_assistant.store import AssistantStore
@@ -158,6 +159,46 @@ class FakeActionJournal:
         return JavaActionCompletion("RECORDED", result)
 
 
+class FakeAutonomyPolicy:
+    configured = True
+    ready = True
+
+    def __init__(self, forced_level: str | None = None) -> None:
+        self.forced_level = forced_level
+        self.calls: list[str] = []
+
+    def decide_autonomy(self, *, action_kind: str) -> JavaAutonomyDecision:
+        self.calls.append(action_kind)
+        if self.forced_level is not None:
+            level = self.forced_level
+        elif action_kind in {"READ_CONTEXT", "CREATE_DRAFT"}:
+            level = "ALLOW"
+        elif action_kind in {
+            "DELETE_DATA",
+            "MASS_OPERATION",
+            "CHANGE_PERMISSIONS",
+            "PUBLISH_EXTERNAL",
+            "IRREVERSIBLE_HIGH_RISK",
+        }:
+            level = "REQUIRE_EXPLICIT_CONFIRMATION"
+        else:
+            level = "REQUIRE_PREVIEW"
+        return JavaAutonomyDecision(
+            level=level,
+            notification_required=level != "ALLOW",
+            undo_required=False,
+            preview_required=level != "ALLOW",
+            explicit_confirmation_required=(
+                level == "REQUIRE_EXPLICIT_CONFIRMATION"
+            ),
+            reason_code={
+                "ALLOW": "pilot.allow",
+                "REQUIRE_PREVIEW": "pilot.preview",
+                "REQUIRE_EXPLICIT_CONFIRMATION": "pilot.explicit-confirmation",
+            }[level],
+        )
+
+
 @pytest.mark.parametrize(
     ("intent", "user_policy", "store_policy", "risk"),
     [
@@ -182,6 +223,125 @@ def test_product_autonomy_policy_maps_to_storage_contract(
         store_policy,
         risk,
     )
+
+
+def test_java_autonomy_policy_verifies_stage_with_only_action_metadata(tmp_path) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    autonomy = FakeAutonomyPolicy()
+    hub = SafeIntegrationHub(
+        store,
+        action_journal=FakeActionJournal(),
+        autonomy_policy=autonomy,
+    )
+    hub.register(InMemoryIntegrationAdapter("jira"))
+
+    approval = hub.stage(
+        IntegrationRequest(
+            "jira",
+            "issue.create",
+            IntegrationIntent.WRITE,
+            {"summary": "Секретный текст не должен попасть в Java"},
+        ),
+        task_id=None,
+    )
+    payload = json.loads(approval["payload"])
+
+    assert autonomy.calls == ["ASSIGN_WORK_ITEM"]
+    assert payload["autonomy_policy"] == {
+        "engine": "java21",
+        "action_kind": "ASSIGN_WORK_ITEM",
+        "level": "REQUIRE_PREVIEW",
+        "reason_code": "pilot.preview",
+        "content_transmitted": False,
+    }
+    assert hub.action_journal_diagnostics()["autonomy_policy"] == "java21"
+
+
+def test_java_autonomy_mismatch_fails_closed_before_approval(tmp_path) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    hub = SafeIntegrationHub(
+        store,
+        action_journal=FakeActionJournal(),
+        autonomy_policy=FakeAutonomyPolicy(forced_level="ALLOW"),
+    )
+    hub.register(InMemoryIntegrationAdapter("jira"))
+
+    with pytest.raises(IntegrationUnavailable, match="расходятся"):
+        hub.stage(
+            IntegrationRequest(
+                "jira",
+                "issue.create",
+                IntegrationIntent.WRITE,
+                {"summary": "Подготовить пилот"},
+            ),
+            task_id=None,
+        )
+
+    assert store._rows("SELECT * FROM approvals") == []
+
+
+def test_java_autonomy_is_rechecked_immediately_before_connector_call(tmp_path) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    autonomy = FakeAutonomyPolicy()
+    adapter = InMemoryIntegrationAdapter("jira")
+    hub = SafeIntegrationHub(
+        store,
+        action_journal=FakeActionJournal(),
+        autonomy_policy=autonomy,
+    )
+    hub.register(adapter)
+    approval = hub.stage(
+        IntegrationRequest(
+            "jira",
+            "issue.create",
+            IntegrationIntent.WRITE,
+            {"summary": "Проверить политику перед вызовом"},
+        ),
+        task_id=None,
+    )
+    store.resolve_approval(approval["id"], "approved")
+    autonomy.forced_level = "ALLOW"
+
+    with pytest.raises(IntegrationUnavailable, match="расходятся"):
+        hub.execute_approved(approval["id"])
+
+    assert autonomy.calls == ["ASSIGN_WORK_ITEM", "ASSIGN_WORK_ITEM"]
+    assert adapter.executions == []
+    row = store._rows("SELECT status FROM approvals WHERE id=?", (approval["id"],))[0]
+    assert row["status"] == "approved"
+
+
+@pytest.mark.parametrize(
+    ("system", "intent", "action_kind"),
+    [
+        ("email", IntegrationIntent.WRITE, "SEND_MESSAGE_OR_EMAIL"),
+        ("calendar", IntegrationIntent.WRITE, "UPSERT_CALENDAR_EVENT"),
+        ("kaiten", IntegrationIntent.WRITE, "ASSIGN_WORK_ITEM"),
+        ("confluence", IntegrationIntent.WRITE, "UPSERT_KNOWLEDGE_PAGE"),
+        ("custom", IntegrationIntent.WRITE, "EXTERNAL_WRITE"),
+        ("custom", IntegrationIntent.PUBLISH, "PUBLISH_EXTERNAL"),
+        ("custom", IntegrationIntent.DELETE, "DELETE_DATA"),
+        ("custom", IntegrationIntent.PERMISSIONS, "CHANGE_PERMISSIONS"),
+        ("custom", IntegrationIntent.MASS, "MASS_OPERATION"),
+    ],
+)
+def test_vendor_neutral_actions_map_to_java_autonomy_categories(
+    tmp_path,
+    system: str,
+    intent: IntegrationIntent,
+    action_kind: str,
+) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    autonomy = FakeAutonomyPolicy()
+    hub = SafeIntegrationHub(store, autonomy_policy=autonomy)
+
+    approval = hub.stage(
+        IntegrationRequest(system, "item.change", intent, {"field": "value"}),
+        task_id=None,
+    )
+
+    assert autonomy.calls == [action_kind]
+    assert json.loads(approval["payload"])["autonomy_policy"]["action_kind"] == action_kind
 
 
 def test_read_and_draft_do_not_create_approval(tmp_path) -> None:  # noqa: ANN001
@@ -226,6 +386,8 @@ def test_write_is_staged_with_preview_and_never_executes_before_approval(
     payload = json.loads(approval["payload"])
     assert approval["confirmation_policy"] == "explicit"
     assert approval["status"] == "pending"
+    assert payload["autonomy_policy"]["engine"] == "python_fallback"
+    assert payload["autonomy_policy"]["content_transmitted"] is False
     assert payload["preview"]["summary"].startswith("Тестовый")
     assert adapter.executions == []
     with pytest.raises(ValueError, match="подтверждённое"):

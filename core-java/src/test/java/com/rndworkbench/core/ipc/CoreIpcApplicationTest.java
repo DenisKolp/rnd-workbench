@@ -21,6 +21,7 @@ class CoreIpcApplicationTest {
         String input = """
                 {"version":"1.0","type":"health.check","correlationId":"smoke-1","payload":{}}
                 {"version":"1.0","type":"route.decide","correlationId":"smoke-2","payload":{"classification":"PUBLIC","preference":"AUTO","availableRoutes":{"local":true,"corporate":false,"external":false},"corporateScopeAuthorized":false,"explicitExternalConsent":false}}
+                {"version":"1.0","type":"autonomy.decide","correlationId":"smoke-3","payload":{"actionKind":"SEND_MESSAGE_OR_EMAIL"}}
                 """;
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ByteArrayOutputStream error = new ByteArrayOutputStream();
@@ -36,9 +37,10 @@ class CoreIpcApplicationTest {
         );
 
         assertEquals(0, exitCode);
-        assertEquals(2, output.toString(StandardCharsets.UTF_8).lines().count());
+        assertEquals(3, output.toString(StandardCharsets.UTF_8).lines().count());
         assertTrue(output.toString(StandardCharsets.UTF_8).contains("\"status\":\"ready\""));
         assertTrue(output.toString(StandardCharsets.UTF_8).contains("LOCAL_SELECTED"));
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("REQUIRE_PREVIEW"));
         assertEquals("", error.toString(StandardCharsets.UTF_8));
     }
 

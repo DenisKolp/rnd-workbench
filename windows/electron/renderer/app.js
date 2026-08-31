@@ -48,7 +48,7 @@ function setMeetingImporting(active, kind = state.meetingImportKind) {
     audioButton.disabled = state.meetingImporting || !state.ptt.sttAvailable;
     audioButton.textContent = state.meetingImporting && activeKind === "audio"
       ? "Распознаю аудио…"
-      : "Аудиозапись · Whisper";
+      : "Аудиозапись";
     audioButton.title = state.ptt.sttAvailable
       ? "Распознать запись локальным Faster-Whisper"
       : state.ptt.sttDetail;
@@ -78,7 +78,12 @@ function setMode(mode) {
   if (!new Set(["compact", "full"]).has(mode)) return;
   state.mode = mode;
   document.body.dataset.mode = mode;
-  byId("modeButton").textContent = mode === "compact" ? "Полное окно" : "Компактно";
+  const modeButton = byId("modeButton");
+  modeButton.textContent = mode === "compact" ? "Развернуть" : "Виджет";
+  modeButton.setAttribute(
+    "aria-label",
+    mode === "compact" ? "Развернуть в полное окно" : "Перейти в компактный виджет",
+  );
   updateComposerPresentation();
   renderRuntime();
 }
@@ -969,10 +974,13 @@ function renderRuntime() {
       : "Java 21 core не настроен в development-режиме";
   const actionJournal = state.platform.java_action_journal || {};
   const recoveryAttention = Number(actionJournal.recovery?.requires_attention || 0);
+  const autonomyPolicyReady = Boolean(actionJournal.autonomy_policy_ready);
   const actionJournalTitle = recoveryAttention > 0
     ? `Внешние действия требуют сверки: ${recoveryAttention}`
-    : actionJournal.ready
-      ? "Java 21 защищает внешние действия от повторного выполнения"
+    : actionJournal.ready && autonomyPolicyReady
+      ? "Java 21 проверяет политику действий и защищает их от повторного выполнения"
+      : actionJournal.ready
+        ? "Журнал Java 21 активен; политика действий работает в резервном режиме"
       : "Защитный журнал недоступен; внешние действия блокируются";
   routeLabel.title = `${routePolicyTitle}\n${actionJournalTitle}`;
   if (javaPolicy.configured && !javaPolicy.ready && !state.javaFallbackNotified) {
@@ -1437,7 +1445,8 @@ function sendText() {
 
 function openSettings() {
   const settings = state.snapshot.settings || {};
-  byId("providerInput").value = state.runtime.provider_type === "local" ? "local" : "corporate";
+  const providerType = String(state.runtime.provider_type || "");
+  byId("providerInput").value = providerType === "corporate" ? "corporate" : "local";
   byId("endpointInput").value = String(settings.llm_base_url || "");
   byId("modelInput").value = String(settings.llm_model || "");
   byId("apiKeyInput").value = "";
