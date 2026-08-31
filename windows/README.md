@@ -31,7 +31,7 @@ Faster-Whisper weights и loopback OmniVoice-Fast server Python-мост чес�
 | TTS, единый голос, перебивание | Готово в исходниках | Один короткий OmniVoice-Fast запрос с фиксированными profile/seed, PCM stream, limiter, 12-мс fade и barge-in; акустические SLO не измерены |
 | Импорт встреч eXpress | Готово в исходниках | Локальный Faster-Whisper обрабатывает выбранный аудиофайл; также доступны готовый транскрипт и пакет с provenance. Нужен Windows hardware QA |
 | Jira / Kaiten / Confluence / почта / календарь | Не подключено | Нужны корпоративные API, OAuth/SSO и тестовые стенды |
-| Подписанный установщик | Частично | Windows CI создаёт unsigned text-first portable artifact и smoke-тестирует packaged backend; подпись, voice runtime и hardware QA не выполнены |
+| Подписанный установщик | Не проверено | Windows CI создаёт unsigned text-first portable artifact и smoke-тестирует packaged backend; подпись, voice runtime и hardware QA не выполнены |
 
 Статусы «в исходниках» означают, что код и автоматические контрактные тесты
 готовы в репозитории. Это не заменяет запуск, подпись и UX-проверку на реальных
