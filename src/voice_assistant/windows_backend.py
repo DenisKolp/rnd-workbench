@@ -69,7 +69,11 @@ class EventEmitter:
     def emit(self, event_type: str, **payload: Any) -> None:
         line = json.dumps(
             {"type": event_type, **payload},
-            ensure_ascii=False,
+            # Keep the JSONL wire ASCII-only. Frozen Windows executables can
+            # inherit a legacy console code page even when Electron expects
+            # UTF-8; JSON escapes round-trip every Unicode character without
+            # depending on that ambient encoding.
+            ensure_ascii=True,
             separators=(",", ":"),
         )
         with self._lock:

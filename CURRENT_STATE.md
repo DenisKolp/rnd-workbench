@@ -81,7 +81,7 @@ PYTHONPATH=src .venv/bin/python -m pytest
 выпускается только после завершения проекта и не входит в эту промежуточную
 контрольную точку.
 
-Полный Python/UI-набор содержит 361 тест и проходит; в него входят 20 macOS и
-51 Windows contract-тест. Отдельные 42 JUnit-теста `core-java` проходят на JDK
+Полный Python/UI-набор содержит 362 теста и проходит; в него входят 20 macOS и
+52 Windows contract-теста. Отдельные 42 JUnit-теста `core-java` проходят на JDK
 21/Gradle 9.7.1. Windows CI, jlink packaging и desktop-интеграция всё равно
 обязательны перед включением Java core в пилотную поставку.

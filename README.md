@@ -320,8 +320,8 @@ TTS выводится блоками по 30 мс, поэтому подтве�
 uv run pytest
 ```
 
-Полный Python/UI-набор содержит **361 тест** и проходит локально; в него входят
-20 macOS и 51 Windows contract-тест. Также проходят 42 JUnit-теста Java 21 core.
+Полный Python/UI-набор содержит **362 теста** и проходит локально; в него входят
+20 macOS и 52 Windows contract-теста. Также проходят 42 JUnit-теста Java 21 core.
 Платформенные оговорки зафиксированы в `CURRENT_STATE.md`. Electron
 `node --check`, endpoint-canonicalization self-tests и строгая рекурсивная
 проверка подписи `.app` входят в релизный чек-лист. Пользовательская live-база и

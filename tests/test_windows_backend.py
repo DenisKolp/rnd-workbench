@@ -10,6 +10,7 @@ import pytest
 
 from voice_assistant.store import AssistantStore
 from voice_assistant.windows_backend import (
+    EventEmitter,
     OpenAIChatClient,
     OmniVoiceLoopbackClient,
     PortableWindowsVoiceRuntime,
@@ -27,6 +28,14 @@ class CapturingEmitter:
 
     def emit(self, event_type: str, **payload: object) -> None:
         self.events.append({"type": event_type, **payload})
+
+
+def test_windows_jsonl_events_are_console_encoding_independent(capsys) -> None:
+    EventEmitter().emit("status", message="Готово №1")
+
+    wire = capsys.readouterr().out
+    wire.encode("ascii")
+    assert json.loads(wire) == {"type": "status", "message": "Готово №1"}
 
 
 class FakeChat:

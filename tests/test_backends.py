@@ -51,6 +51,14 @@ def test_whisper_transcribe_file_normalizes_audio_locally(monkeypatch, tmp_path)
         normalized.write_bytes(b"RIFF-normalized")
         return SimpleNamespace(returncode=0)
 
+    original_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda candidate: (
+            True if candidate == Path("/usr/bin/afconvert") else original_is_file(candidate)
+        ),
+    )
     monkeypatch.setattr("voice_assistant.backends.subprocess.run", fake_run)
     backend = WhisperSTT(STTConfig())
     backend.model = FakeModel()
