@@ -22,6 +22,7 @@ import base64
 from collections.abc import Callable, Iterator
 import http.client
 import ipaddress
+import importlib
 import importlib.util
 import json
 import os
@@ -78,6 +79,25 @@ class EventEmitter:
         )
         with self._lock:
             print(line, flush=True)
+
+
+def probe_windows_voice_dependencies() -> dict[str, Any]:
+    """Import the bundled Windows voice libraries without loading model weights.
+
+    The result deliberately exposes only component names and booleans: exception
+    messages from native loaders may contain local paths and do not belong on the
+    desktop JSONL wire or in CI output.
+    """
+
+    components: dict[str, bool] = {}
+    for module_name in ("faster_whisper", "ctranslate2", "tokenizers"):
+        try:
+            importlib.import_module(module_name)
+        except Exception:
+            components[module_name] = False
+        else:
+            components[module_name] = True
+    return {"ready": all(components.values()), "components": components}
 
 
 def _abort_http_connection(connection: http.client.HTTPConnection) -> None:
@@ -876,6 +896,16 @@ class WindowsPilotBackend:
             self.finish_voice_utterance(command)
         elif name == "voice_capabilities":
             self.emit_voice_capability()
+        elif name == "voice_dependency_probe":
+            probe = probe_windows_voice_dependencies()
+            self.emitter.emit(
+                "diagnostic",
+                component="windows_voice",
+                check="runtime_dependencies",
+                measured=True,
+                ready=probe["ready"],
+                components=probe["components"],
+            )
         elif name == "voice_self_check":
             self.emit_voice_capability()
             self.emitter.emit(

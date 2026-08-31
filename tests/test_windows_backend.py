@@ -721,6 +721,21 @@ def test_voice_self_check_does_not_claim_unmeasured_windows_hardware_slo(tmp_pat
     assert diagnostic["check"] == "hardware_slo"
     assert diagnostic["measured"] is False
 
+    backend.handle({"command": "voice_dependency_probe"})
+    dependency_probe = next(
+        event
+        for event in reversed(emitter.events)
+        if event.get("check") == "runtime_dependencies"
+    )
+    assert dependency_probe["measured"] is True
+    assert isinstance(dependency_probe["ready"], bool)
+    assert set(dependency_probe["components"]) == {
+        "faster_whisper",
+        "ctranslate2",
+        "tokenizers",
+    }
+    assert all(isinstance(value, bool) for value in dependency_probe["components"].values())
+
 
 def test_push_to_talk_capability_requires_only_local_stt(tmp_path) -> None:
     emitter = CapturingEmitter()

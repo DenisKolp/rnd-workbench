@@ -10,6 +10,7 @@ HTML = ROOT / "windows" / "electron" / "renderer" / "index.html"
 DOCS = ROOT / "windows" / "README.md"
 BUILD_REQUIREMENTS = ROOT / "windows" / "requirements-build.txt"
 VOICE_REQUIREMENTS = ROOT / "windows" / "requirements-voice.txt"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 PTT_HOTKEY = ROOT / "windows" / "electron" / "ptt-hotkey.ps1"
 PTT_INSERT = ROOT / "windows" / "electron" / "ptt-insert.ps1"
 
@@ -267,12 +268,18 @@ def test_windows_build_uses_isolated_pinned_non_mlx_dependencies() -> None:
     assert "mlx" not in package_lines.casefold()
     assert "[switch]$WithVoice" in build
     assert 'Assert-PythonPackageVersion -Package "faster-whisper"' in build
-    assert "RND_WORKBENCH_WINDOWS_WHISPER_MODEL" in build
-    assert "RND_WORKBENCH_WINDOWS_OMNIVOICE_URL" in build
+    assert "RND_WORKBENCH_WINDOWS_WHISPER_MODEL" not in build
+    assert "RND_WORKBENCH_WINDOWS_OMNIVOICE_URL" not in build
     assert '"--collect-all", "faster_whisper"' in build
     assert "onnxruntime" not in build
     assert "pip install" not in build
     assert "& $NodePackageManager ci" in build
+
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "windows/requirements-voice.txt" in workflow
+    assert "windows/build.ps1 -Python python -WithVoice" in workflow
+    assert '"command":"voice_dependency_probe"' in workflow
+    assert "RnD-Workbench-Windows-voice-ready-unsigned-QA" in workflow
 
 
 def test_readiness_matrix_does_not_claim_unimplemented_voice_or_connectors() -> None:

@@ -33,13 +33,6 @@ Assert-PythonPackageVersion -Package "numpy" -Expected "2.2.6"
 Assert-PythonPackageVersion -Package "pyinstaller" -Expected "6.15.0"
 if ($WithVoice) {
     Assert-PythonPackageVersion -Package "faster-whisper" -Expected "1.2.0"
-    if ([string]::IsNullOrWhiteSpace($env:RND_WORKBENCH_WINDOWS_WHISPER_MODEL)) {
-        throw "RND_WORKBENCH_WINDOWS_WHISPER_MODEL must identify pre-provisioned Faster-Whisper weights."
-    }
-    if ([string]::IsNullOrWhiteSpace($env:RND_WORKBENCH_WINDOWS_OMNIVOICE_URL) -or
-        $env:RND_WORKBENCH_WINDOWS_OMNIVOICE_URL -notmatch "^https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:/|$)") {
-        throw "RND_WORKBENCH_WINDOWS_OMNIVOICE_URL must be an explicit loopback OmniVoice-Fast endpoint."
-    }
 }
 
 # Build the temporary Python JSONL bridge as a self-contained executable.  A

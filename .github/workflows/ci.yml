@@ -65,7 +65,7 @@ jobs:
         run: gradle --no-daemon clean test installDist
 
   windows-portable-source-build:
-    name: Windows Electron portable source build
+    name: Windows Electron voice-ready portable build
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
@@ -77,7 +77,7 @@ jobs:
       - name: Install Windows build and contract dependencies
         shell: pwsh
         run: |
-          python -m pip install -r windows/requirements-build.txt
+          python -m pip install -r windows/requirements-voice.txt
           python -m pip install "pytest>=8.3,<9" "sounddevice>=0.5.1,<1" "soundfile>=0.13.1,<1"
       - name: Run Windows-specific contracts
         shell: pwsh
@@ -89,19 +89,29 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: windows/electron/package-lock.json
-      - name: Build portable text-first package
+      - name: Build portable voice-ready package
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File windows/build.ps1 -Python python
-      - name: Smoke-test packaged backend
+        run: powershell -ExecutionPolicy Bypass -File windows/build.ps1 -Python python -WithVoice
+      - name: Smoke-test packaged backend and bundled voice dependencies
         shell: pwsh
         run: |
           $dataPath = Join-Path $env:RUNNER_TEMP "rnd-workbench-smoke.sqlite3"
-          '{"command":"quit"}' | & windows/dist/backend/rnd-workbench-backend.exe --data $dataPath
+          $output = @(
+            '{"command":"voice_dependency_probe"}'
+            '{"command":"quit"}'
+          ) | & windows/dist/backend/rnd-workbench-backend.exe --data $dataPath
           if ($LASTEXITCODE -ne 0) { throw "Packaged backend smoke-test failed." }
+          $probe = $output |
+            ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.type -eq "diagnostic" -and $_.check -eq "runtime_dependencies" } |
+            Select-Object -Last 1
+          if ($null -eq $probe -or -not $probe.ready) {
+            throw "Packaged Faster-Whisper dependencies are unavailable."
+          }
       - name: Upload unsigned QA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RnD-Workbench-Windows-unsigned-QA
+          name: RnD-Workbench-Windows-voice-ready-unsigned-QA
           path: windows/dist/electron/*.exe
           if-no-files-found: error
           retention-days: 7
