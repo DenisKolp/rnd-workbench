@@ -976,8 +976,43 @@ def test_renderer_voice_diagnostics_are_allowlisted_and_bounded(tmp_path) -> Non
             "hardware_measured": True,
         },
     }
+    summary = backend.store.pilot_metrics_summary(platform="windows")
+    assert summary["metrics"]["input_peak"]["p50"] == 0.91
+    assert summary["metrics"]["input_clipping_ratio"]["p50"] == 0.000188
     with pytest.raises(ValueError, match="Неизвестный"):
         backend.handle({"command": "voice_diagnostic", "kind": "arbitrary"})
+
+
+def test_renderer_voice_timing_diagnostics_are_persisted_without_content(tmp_path) -> None:
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        CapturingEmitter(),
+        voice_runtime=FakeVoiceRuntime(),
+    )
+    backend.handle(
+        {
+            "command": "voice_diagnostic",
+            "kind": "listen_ready",
+            "seconds": 0.21,
+            "hardware_measured": True,
+            "transcript": "НЕ СОХРАНЯТЬ",
+        }
+    )
+    backend.handle(
+        {
+            "command": "voice_diagnostic",
+            "kind": "playback_first_audio",
+            "seconds": 2.4,
+            "hardware_measured": True,
+            "prompt": "НЕ СОХРАНЯТЬ",
+        }
+    )
+    summary = backend.store.pilot_metrics_summary(platform="windows")
+    database_bytes = (tmp_path / "assistant.sqlite3").read_bytes()
+
+    assert summary["metrics"]["listen_ready_seconds"]["p50"] == 0.21
+    assert summary["metrics"]["first_audio_seconds"]["p50"] == 2.4
+    assert b"\xd0\x9d\xd0\x95 \xd0\xa1\xd0\x9e\xd0\xa5\xd0\xa0\xd0\x90\xd0\x9d\xd0\xaf\xd0\xa2\xd0\xac" not in database_bytes
 
 
 def test_voice_self_check_does_not_claim_unmeasured_windows_hardware_slo(tmp_path) -> None:
@@ -1176,14 +1211,14 @@ def test_barge_in_queue_releases_after_bounded_cancel_wait(tmp_path) -> None:
     replacement_started = threading.Event()
     received: list[bytes] = []
 
-    def replacement(audio, _cancel_event) -> None:  # noqa: ANN001
+    def replacement(audio, _cancel_event, _response_started_at) -> None:  # noqa: ANN001
         received.append(audio)
         replacement_started.set()
 
     backend._VOICE_CANCEL_WAIT_SECONDS = 0.02
     backend._run_voice_turn = replacement  # type: ignore[method-assign]
     backend._voice_session_active = True
-    backend._pending_voice_audio = b"new utterance"
+    backend._pending_voice_audio = (b"new utterance", time.perf_counter())
     backend._worker = old_worker
 
     started = time.monotonic()

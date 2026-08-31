@@ -35,9 +35,10 @@ from .java_core import (
 )
 from .integrations import SafeIntegrationHub
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
-from .store import AssistantStore
+from .store import AssistantStore, new_id
 from .synapse import SynapseImportInProgressError, SynapseRepairRequiredError
 from .text import concise_speech_text
+from .voice_quality import analyze_audio
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,8 @@ class UIBackend:
         self._meeting_briefing: str | None = None
         self.stop_event = threading.Event()
         self.shutdown_event = threading.Event()
+        self._pilot_session_id = new_id()
+        self._voice_session_requested_at: float | None = None
         self.session_thread: threading.Thread | None = None
         self.dictation_thread: threading.Thread | None = None
         self.dictation_release_event = threading.Event()
@@ -214,6 +217,8 @@ class UIBackend:
             self.emit_snapshot()
         elif name == "snapshot":
             self.emit_snapshot()
+        elif name == "export_pilot_metrics":
+            self.export_pilot_metrics(command)
         elif name == "select_workspace":
             workspace_id = str(command.get("id", ""))
             self.store.get_workspace(workspace_id)
@@ -1432,12 +1437,55 @@ class UIBackend:
             self.emitter.emit("session_stopped")
             return
         self.stop_event.clear()
+        self._voice_session_requested_at = time.perf_counter()
         self.session_thread = threading.Thread(
             target=self._voice_loop,
             name="voice-session",
             daemon=True,
         )
         self.session_thread.start()
+
+    def export_pilot_metrics(self, command: dict[str, Any]) -> None:
+        raw_path = str(command.get("path") or "").strip()
+        if not raw_path or len(raw_path) > 4_096:
+            raise ValueError("Не указан путь для отчёта пилота")
+        destination = self.store.export_pilot_metrics(
+            Path(raw_path), days=14, platform="macos"
+        )
+        self.emitter.emit("pilot_metrics_exported", path=str(destination))
+
+    def _record_pilot_metric(
+        self,
+        metric: str,
+        value: float,
+        *,
+        measurement_scope: str = "software",
+        route: str | None = None,
+        outcome: str = "ok",
+    ) -> None:
+        try:
+            selected_route = str(route or self._llm_runtime().get("provider_type") or "unknown")
+            if selected_route == "auto":
+                selected_route = "local"
+            if selected_route not in {"local", "corporate", "external", "deterministic"}:
+                selected_route = "unknown"
+            self.store.record_pilot_metric(
+                self._pilot_session_id,
+                "macos",
+                metric,
+                value,
+                measurement_scope=measurement_scope,
+                route=selected_route,
+                outcome=outcome,
+            )
+        except Exception as exc:
+            self.emitter.emit(
+                "diagnostic",
+                component="pilot_metrics",
+                check="store_failed",
+                measured=True,
+                error_type=type(exc).__name__,
+            )
 
     def start_dictation(self, *, destination: str = "system") -> None:
         """Start a push-to-talk capture that never invokes the LLM or TTS."""
@@ -2065,6 +2113,13 @@ class UIBackend:
                     threshold=round(threshold, 4),
                     mode=calibration_mode,
                 )
+                if self._voice_session_requested_at is not None:
+                    self._record_pilot_metric(
+                        "listen_ready_seconds",
+                        time.perf_counter() - self._voice_session_requested_at,
+                        measurement_scope="device",
+                    )
+                    self._voice_session_requested_at = None
                 pending_input: _PendingVoiceInput | None = None
                 while not self.stop_event.is_set():
                     if pending_input is None:
@@ -2094,6 +2149,32 @@ class UIBackend:
                         limit_ms=self.config.audio.silence_ms,
                     )
                     voice_turn_started_at = detected_at - speech_tail
+                    try:
+                        signal = analyze_audio(audio, self.config.audio.sample_rate)
+                        sample_count = max(
+                            1,
+                            round(
+                                float(signal["audio_seconds"])
+                                * self.config.audio.sample_rate
+                            ),
+                        )
+                        self._record_pilot_metric(
+                            "input_peak",
+                            float(signal["peak"]),
+                            measurement_scope="device",
+                        )
+                        self._record_pilot_metric(
+                            "input_clipping_ratio",
+                            int(signal["clipped_samples"]) / sample_count,
+                            measurement_scope="device",
+                        )
+                    except (TypeError, ValueError):
+                        self.emitter.emit(
+                            "diagnostic",
+                            component="pilot_metrics",
+                            check="input_signal_unavailable",
+                            measured=False,
+                        )
                     if response_started_at is None:
                         response_started_at = voice_turn_started_at
                     self.emitter.emit("state", state="transcribing", detail="Распознаю речь…")
@@ -2104,10 +2185,17 @@ class UIBackend:
                         self.emitter.emit("notice", message="Речь не распознана")
                         continue
                     self.emitter.emit("metric", name="stt", seconds=round(stt_seconds, 2))
+                    transcript_ready_seconds = time.perf_counter() - voice_turn_started_at
                     self.emitter.emit(
                         "metric",
                         name="voice_transcript_ready",
-                        seconds=round(time.perf_counter() - voice_turn_started_at, 3),
+                        seconds=round(transcript_ready_seconds, 3),
+                    )
+                    self._record_pilot_metric("stt_compute_seconds", stt_seconds)
+                    self._record_pilot_metric(
+                        "transcript_ready_seconds",
+                        transcript_ready_seconds,
+                        measurement_scope="device",
                     )
 
                     if text.casefold().strip(" .!?") in {
@@ -2149,6 +2237,7 @@ class UIBackend:
             self.emitter.emit("error", message=str(exc))
         finally:
             self.stop_event.set()
+            self._voice_session_requested_at = None
             self.emitter.emit("state", state="ready", detail="Готов к работе")
             self.emitter.emit("session_stopped")
 
@@ -2373,6 +2462,13 @@ class UIBackend:
                     name="answer_cancel_timeout",
                     seconds=round(join_timeout, 3),
                 )
+            elif interrupted_at is not None:
+                self._record_pilot_metric(
+                    "barge_in_stop_seconds",
+                    time.perf_counter() - interrupted_at,
+                    measurement_scope="software",
+                    outcome="cancelled",
+                )
             self._clear_current_turn(cancel_event)
 
         if errors:
@@ -2451,6 +2547,13 @@ class UIBackend:
                         seconds=first_audio_seconds,
                         task_id=turn.task_id,
                     )
+                    if response_started_at is not None:
+                        self._record_pilot_metric(
+                            "first_audio_seconds",
+                            first_audio_seconds,
+                            measurement_scope="device",
+                            route=str(route_metadata.get("provider_type") or "unknown"),
+                        )
             if phase == "speaking" and speaking_event is not None:
                 speaking_event.set()
             elif phase == "thinking" and speaking_event is not None:
@@ -2491,6 +2594,12 @@ class UIBackend:
                         seconds=first_token_seconds,
                         task_id=turn.task_id,
                     )
+                    if response_started_at is not None:
+                        self._record_pilot_metric(
+                            "first_token_seconds",
+                            first_token_seconds,
+                            route=str(route_metadata.get("provider_type") or "unknown"),
+                        )
             self.emitter.emit("assistant_delta", text=token)
 
         def invoke_model(backend: Any, prompt: str) -> str:
@@ -2644,6 +2753,13 @@ class UIBackend:
             and not interrupted
         )
         total_seconds = round(time.perf_counter() - started, 3)
+        if response_started_at is not None:
+            self._record_pilot_metric(
+                "response_total_seconds",
+                total_seconds,
+                route=str(route_metadata.get("provider_type") or "unknown"),
+                outcome="cancelled" if interrupted else "ok",
+            )
         performance_metadata = {
             "total_seconds": total_seconds,
             "timing_origin": (

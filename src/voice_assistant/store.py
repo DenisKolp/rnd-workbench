@@ -18,7 +18,44 @@ from uuid import uuid4
 from .automation import next_run
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
+
+PILOT_METRIC_UNITS = {
+    "listen_ready_seconds": "seconds",
+    "stt_compute_seconds": "seconds",
+    "transcript_ready_seconds": "seconds",
+    "first_token_seconds": "seconds",
+    "first_audio_seconds": "seconds",
+    "response_total_seconds": "seconds",
+    "barge_in_stop_seconds": "seconds",
+    "tts_rtf": "ratio",
+    "input_peak": "ratio",
+    "input_clipping_ratio": "ratio",
+    "output_peak": "ratio",
+    "output_clipping_ratio": "ratio",
+}
+PILOT_METRIC_MAX_VALUES = {
+    "input_peak": 4.0,
+    "output_peak": 4.0,
+    "input_clipping_ratio": 1.0,
+    "output_clipping_ratio": 1.0,
+    "tts_rtf": 100.0,
+}
+PILOT_METRIC_SLOS: dict[str, dict[str, float]] = {
+    "listen_ready_seconds": {"p95": 0.3},
+    "transcript_ready_seconds": {"p50": 1.2, "p95": 2.5},
+    "first_audio_seconds": {"p50": 3.0, "p95": 6.0},
+    "barge_in_stop_seconds": {"p95": 0.25},
+    "tts_rtf": {"p95": 0.45},
+    "input_clipping_ratio": {"max": 0.0},
+    "output_clipping_ratio": {"max": 0.0},
+}
+PILOT_PLATFORMS = {"macos", "windows", "linux"}
+PILOT_MEASUREMENT_SCOPES = {"software", "device"}
+PILOT_ROUTES = {"local", "corporate", "external", "deterministic", "unknown"}
+PILOT_OUTCOMES = {"ok", "cancelled", "error", "ignored"}
+PILOT_METRIC_RETENTION_DAYS = 90
+PILOT_METRIC_MAX_ROWS = 20_000
 
 DATA_CLASSIFICATIONS = ("public", "internal", "confidential", "restricted")
 CLASSIFICATION_RANK = {
@@ -465,6 +502,24 @@ class AssistantStore:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS pilot_metrics (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            platform TEXT NOT NULL
+                CHECK(platform IN ('macos', 'windows', 'linux')),
+            metric TEXT NOT NULL,
+            value REAL NOT NULL CHECK(value >= 0),
+            unit TEXT NOT NULL CHECK(unit IN ('seconds', 'ratio', 'count')),
+            measurement_scope TEXT NOT NULL DEFAULT 'software'
+                CHECK(measurement_scope IN ('software', 'device')),
+            route TEXT NOT NULL DEFAULT 'unknown'
+                CHECK(route IN ('local', 'corporate', 'external', 'deterministic', 'unknown')),
+            outcome TEXT NOT NULL DEFAULT 'ok'
+                CHECK(outcome IN ('ok', 'cancelled', 'error', 'ignored')),
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS pilot_metrics_time_idx
+            ON pilot_metrics(created_at, platform, metric);
         """
         with self.transaction() as connection:
             connection.executescript(schema)
@@ -4429,6 +4484,227 @@ class AssistantStore:
     def settings(self) -> dict[str, str]:
         return {row["key"]: row["value"] for row in self._rows("SELECT * FROM settings")}
 
+    def record_pilot_metric(
+        self,
+        session_id: str,
+        platform: str,
+        metric: str,
+        value: float,
+        *,
+        measurement_scope: str = "software",
+        route: str = "unknown",
+        outcome: str = "ok",
+    ) -> None:
+        """Store one content-free product measurement for the local pilot.
+
+        The contract intentionally has no task, source, transcript, prompt, or
+        free-form metadata field.  Callers can persist only allowlisted numeric
+        measurements and bounded categorical labels.
+        """
+
+        normalized_session = str(session_id).strip()
+        normalized_platform = str(platform).strip().casefold()
+        normalized_metric = str(metric).strip().casefold()
+        normalized_scope = str(measurement_scope).strip().casefold()
+        normalized_route = str(route).strip().casefold()
+        normalized_outcome = str(outcome).strip().casefold()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", normalized_session):
+            raise ValueError("Некорректный идентификатор сессии метрик")
+        if normalized_platform not in PILOT_PLATFORMS:
+            raise ValueError("Неизвестная платформа метрик пилота")
+        if normalized_metric not in PILOT_METRIC_UNITS:
+            raise ValueError("Неизвестная метрика пилота")
+        if normalized_scope not in PILOT_MEASUREMENT_SCOPES:
+            raise ValueError("Неизвестный контур измерения")
+        if normalized_route not in PILOT_ROUTES:
+            raise ValueError("Неизвестный маршрут модели")
+        if normalized_outcome not in PILOT_OUTCOMES:
+            raise ValueError("Неизвестный результат измерения")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("Значение метрики должно быть числом")
+        numeric_value = float(value)
+        if not math.isfinite(numeric_value) or numeric_value < 0:
+            raise ValueError("Значение метрики должно быть конечным и неотрицательным")
+        unit = PILOT_METRIC_UNITS[normalized_metric]
+        maximum = PILOT_METRIC_MAX_VALUES.get(
+            normalized_metric,
+            3_600.0 if unit == "seconds" else 1_000_000_000.0,
+        )
+        if numeric_value > maximum:
+            raise ValueError("Значение метрики выходит за допустимый диапазон")
+
+        recorded_at = utc_now()
+        retention_cutoff = (
+            datetime.now(UTC) - timedelta(days=PILOT_METRIC_RETENTION_DAYS)
+        ).isoformat(timespec="seconds")
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO pilot_metrics(
+                    id, session_id, platform, metric, value, unit,
+                    measurement_scope, route, outcome, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id(),
+                    normalized_session,
+                    normalized_platform,
+                    normalized_metric,
+                    numeric_value,
+                    unit,
+                    normalized_scope,
+                    normalized_route,
+                    normalized_outcome,
+                    recorded_at,
+                ),
+            )
+            connection.execute(
+                "DELETE FROM pilot_metrics WHERE created_at < ?",
+                (retention_cutoff,),
+            )
+            connection.execute(
+                """
+                DELETE FROM pilot_metrics WHERE id IN (
+                    SELECT id FROM pilot_metrics
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT -1 OFFSET ?
+                )
+                """,
+                (PILOT_METRIC_MAX_ROWS,),
+            )
+
+    @staticmethod
+    def _pilot_percentile(values: list[float], percentile: float) -> float:
+        if not values:
+            raise ValueError("Для перцентиля нужен хотя бы один результат")
+        ordered = sorted(values)
+        if len(ordered) == 1:
+            return ordered[0]
+        position = (len(ordered) - 1) * percentile
+        lower = math.floor(position)
+        upper = math.ceil(position)
+        if lower == upper:
+            return ordered[lower]
+        return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+    def pilot_metrics_summary(
+        self,
+        *,
+        days: int = 14,
+        platform: str | None = None,
+    ) -> dict[str, Any]:
+        """Return aggregate-only pilot telemetry safe for UI and export."""
+
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 365:
+            raise ValueError("Окно метрик должно быть от 1 до 365 дней")
+        normalized_platform = None
+        if platform is not None:
+            normalized_platform = str(platform).strip().casefold()
+            if normalized_platform not in PILOT_PLATFORMS:
+                raise ValueError("Неизвестная платформа метрик пилота")
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat(timespec="seconds")
+        parameters: list[Any] = [cutoff]
+        platform_clause = ""
+        if normalized_platform is not None:
+            platform_clause = " AND platform = ?"
+            parameters.append(normalized_platform)
+        rows = self._rows(
+            """
+            SELECT platform, metric, value, unit, measurement_scope, route, outcome
+            FROM pilot_metrics
+            WHERE created_at >= ?
+            """
+            + platform_clause
+            + " ORDER BY created_at, rowid",
+            parameters,
+        )
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        platform_counts: dict[str, int] = {}
+        route_counts: dict[str, int] = {}
+        outcome_counts: dict[str, int] = {}
+        for row in rows:
+            grouped.setdefault(str(row["metric"]), []).append(row)
+            platform_name = str(row["platform"])
+            route_name = str(row["route"])
+            outcome_name = str(row["outcome"])
+            platform_counts[platform_name] = platform_counts.get(platform_name, 0) + 1
+            route_counts[route_name] = route_counts.get(route_name, 0) + 1
+            outcome_counts[outcome_name] = outcome_counts.get(outcome_name, 0) + 1
+
+        metrics: dict[str, dict[str, Any]] = {}
+        for metric, samples in grouped.items():
+            values = [float(sample["value"]) for sample in samples]
+            statistics = {
+                "unit": str(samples[0]["unit"]),
+                "count": len(values),
+                "average": round(sum(values) / len(values), 6),
+                "min": round(min(values), 6),
+                "max": round(max(values), 6),
+                "p50": round(self._pilot_percentile(values, 0.50), 6),
+                "p95": round(self._pilot_percentile(values, 0.95), 6),
+                "device_count": sum(
+                    sample["measurement_scope"] == "device" for sample in samples
+                ),
+                "software_count": sum(
+                    sample["measurement_scope"] == "software" for sample in samples
+                ),
+            }
+            targets = PILOT_METRIC_SLOS.get(metric)
+            if targets:
+                evaluations = {
+                    statistic: statistics[statistic] <= target
+                    for statistic, target in targets.items()
+                }
+                statistics["slo"] = {
+                    "targets": targets,
+                    "evaluations": evaluations,
+                    "status": (
+                        "insufficient_data"
+                        if len(values) < 5
+                        else "pass" if all(evaluations.values()) else "fail"
+                    ),
+                }
+            metrics[metric] = statistics
+        return {
+            "schema_version": 1,
+            "privacy": "content_free_aggregate",
+            "generated_at": utc_now(),
+            "window_days": days,
+            "platform_filter": normalized_platform,
+            "sample_count": len(rows),
+            "platform_counts": platform_counts,
+            "route_counts": route_counts,
+            "outcome_counts": outcome_counts,
+            "metrics": metrics,
+        }
+
+    def export_pilot_metrics(
+        self,
+        destination: Path,
+        *,
+        days: int = 14,
+        platform: str | None = None,
+    ) -> Path:
+        """Write an aggregate-only JSON report; raw session rows never leave SQLite."""
+
+        target = Path(destination).expanduser().resolve()
+        if target.suffix.casefold() != ".json":
+            target = target.with_suffix(".json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(target.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(
+                self.pilot_metrics_summary(days=days, platform=platform),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(target)
+        return target
+
     def audit(
         self,
         task_id: str | None,
@@ -4581,6 +4857,7 @@ class AssistantStore:
                 "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 100"
             ),
             "settings": settings,
+            "pilot_metrics": self.pilot_metrics_summary(),
             "today": today,
             "model": (
                 f"{settings.get('llm_model') or 'Внешняя модель'} · внешний API"

@@ -989,6 +989,7 @@ final class BackendController: ObservableObject {
     @Published var currentTaskID: String?
     @Published var currentMeetingID: String?
     @Published var settings: [String: String] = [:]
+    @Published private(set) var pilotMetrics: [String: Any] = [:]
     @Published var dashboard = DashboardStats()
     @Published var modelName = "Локальная MLX"
     @Published var composerDraft = ""
@@ -1028,6 +1029,34 @@ final class BackendController: ObservableObject {
     }
 
     var llmMode: String { settings["llm_mode"] ?? "local" }
+
+    var pilotMetricSampleCount: Int { int(pilotMetrics["sample_count"]) }
+
+    var pilotMetricsSummaryLabel: String {
+        let metrics = pilotMetrics["metrics"] as? [String: Any] ?? [:]
+        func statistic(_ metric: String, _ name: String) -> Double? {
+            guard let values = metrics[metric] as? [String: Any] else { return nil }
+            return number(values[name])
+        }
+        var parts: [String] = []
+        if let value = statistic("listen_ready_seconds", "p95") {
+            parts.append(String(format: "готовность p95 %.2f с", value))
+        }
+        if let p50 = statistic("transcript_ready_seconds", "p50"),
+           let p95 = statistic("transcript_ready_seconds", "p95") {
+            parts.append(String(format: "текст p50/p95 %.2f/%.2f с", p50, p95))
+        }
+        if let p50 = statistic("first_audio_seconds", "p50"),
+           let p95 = statistic("first_audio_seconds", "p95") {
+            parts.append(String(format: "звук p50/p95 %.2f/%.2f с", p50, p95))
+        }
+        if let maximum = statistic("output_clipping_ratio", "max") {
+            parts.append(String(format: "клиппинг %.3f%%", maximum * 100))
+        }
+        return parts.isEmpty
+            ? "Сделайте несколько голосовых запросов на этом устройстве."
+            : parts.joined(separator: " · ")
+    }
     var externalLLMBaseURL: String { settings["external_llm_base_url"] ?? "" }
     var externalLLMModel: String { settings["external_llm_model"] ?? "" }
     var externalProviderType: String { settings["external_provider_type"] ?? "external" }
@@ -2094,6 +2123,24 @@ final class BackendController: ObservableObject {
         "\(action.taskID ?? currentTaskID ?? "none"):\(action.id)"
     }
 
+    func exportPilotMetrics() {
+        let panel = NSSavePanel()
+        panel.title = "Экспортировать обезличенную сводку качества"
+        panel.prompt = "Сохранить"
+        panel.nameFieldStringValue = "RnD-Workbench-pilot-metrics.json"
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.begin { [weak self] result in
+            guard result == .OK, let url = panel.url else { return }
+            Task { @MainActor [weak self] in
+                self?.send([
+                    "command": "export_pilot_metrics",
+                    "path": url.path,
+                ])
+            }
+        }
+    }
+
     func shutdown() {
         globalPushToTalkMonitor?.stop()
         globalPushToTalkMonitor = nil
@@ -2365,6 +2412,8 @@ final class BackendController: ObservableObject {
             }
             lastAssistantSpoken = true
             statusText = "Ответ озвучен"
+        case "pilot_metrics_exported":
+            statusText = "Обезличенная сводка качества сохранена"
         case "task_context":
             activeSources = rows(event, "sources").map(sourceRecord)
         case "routing_fallback":
@@ -2807,6 +2856,7 @@ final class BackendController: ObservableObject {
         taskEvents = rows(data, "task_events").map { EntityRecord(id: string($0, "id"), title: string($0, "title"), subtitle: string($0, "kind"), detail: string($0, "detail"), status: string($0, "created_at")) }
         audit = rows(data, "audit").map { EntityRecord(id: string($0, "id"), title: string($0, "action"), subtitle: string($0, "status"), detail: string($0, "detail"), status: string($0, "created_at")) }
         settings = (data["settings"] as? [String: String]) ?? [:]
+        pilotMetrics = (data["pilot_metrics"] as? [String: Any]) ?? [:]
         if let platform = data["platform"] as? [String: Any],
            let javaPolicy = platform["java_core_policy"] as? [String: Any] {
             javaCorePolicyConfigured = bool(javaPolicy["configured"])
@@ -5389,6 +5439,21 @@ struct SettingsView: View {
                     }
                     .accessibilityHint("Запрашивает Универсальный доступ, Мониторинг ввода и разрешение резервной вставки")
                 }
+            }
+            Section("Качество пилота") {
+                LabeledContent(
+                    "Измерений за 14 дней",
+                    value: "\(controller.pilotMetricSampleCount)"
+                )
+                Text(controller.pilotMetricsSummaryLabel)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(RnDTheme.ink)
+                Button("Экспортировать сводку JSON") {
+                    controller.exportPilotMetrics()
+                }
+                Text("Экспорт содержит только агрегаты задержек и сигнала — без запросов, транскриптов, ответов и идентификаторов сессий.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("Данные и модели") {
                 LabeledContent(

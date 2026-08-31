@@ -28,6 +28,72 @@ def test_store_seeds_local_workspace_skills_and_capabilities(tmp_path) -> None:
     assert {"dictation", "local-search", "documents", "voice", "synapse-package"} <= connected
 
 
+def test_pilot_metrics_are_content_free_aggregates_with_slo_status(tmp_path) -> None:
+    store = make_store(tmp_path)
+    for value in (0.7, 0.9, 1.0, 1.1, 1.3):
+        store.record_pilot_metric(
+            "session_test",
+            "windows",
+            "transcript_ready_seconds",
+            value,
+            measurement_scope="device",
+            route="local",
+        )
+    summary = store.pilot_metrics_summary(platform="windows")
+    metric = summary["metrics"]["transcript_ready_seconds"]
+
+    assert summary["privacy"] == "content_free_aggregate"
+    assert summary["sample_count"] == 5
+    assert summary["platform_counts"] == {"windows": 5}
+    assert summary["route_counts"] == {"local": 5}
+    assert metric["count"] == 5
+    assert metric["p50"] == 1.0
+    assert metric["p95"] == 1.26
+    assert metric["device_count"] == 5
+    assert metric["slo"]["status"] == "pass"
+
+
+def test_pilot_metric_contract_rejects_free_form_labels_and_non_finite_values(
+    tmp_path,
+) -> None:
+    store = make_store(tmp_path)
+
+    with pytest.raises(ValueError, match="Неизвестная метрика"):
+        store.record_pilot_metric("session", "windows", "prompt_text", 1.0)
+    with pytest.raises(ValueError, match="маршрут"):
+        store.record_pilot_metric(
+            "session",
+            "windows",
+            "stt_compute_seconds",
+            1.0,
+            route="https://secret.example/query",
+        )
+    with pytest.raises(ValueError, match="конечным"):
+        store.record_pilot_metric(
+            "session", "windows", "stt_compute_seconds", float("nan")
+        )
+
+
+def test_pilot_metric_export_contains_aggregates_but_no_session_rows(tmp_path) -> None:
+    store = make_store(tmp_path)
+    store.record_pilot_metric(
+        "session_private_marker",
+        "macos",
+        "first_audio_seconds",
+        2.5,
+        route="corporate",
+    )
+    destination = store.export_pilot_metrics(tmp_path / "pilot-report")
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert destination.name == "pilot-report.json"
+    assert payload["metrics"]["first_audio_seconds"]["p50"] == 2.5
+    assert payload["route_counts"] == {"corporate": 1}
+    assert "session_private_marker" not in serialized
+    assert "session_id" not in serialized
+
+
 def test_tasks_keep_separate_context_and_persist_messages(tmp_path) -> None:
     store = make_store(tmp_path)
     workspace = store.default_workspace_id()

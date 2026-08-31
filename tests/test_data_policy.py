@@ -67,7 +67,7 @@ def test_fresh_schema_v9_has_fail_safe_defaults_and_public_builtin_skills(
 ) -> None:
     store = make_store(tmp_path)
 
-    assert SCHEMA_VERSION == 9
+    assert SCHEMA_VERSION == 10
     assert (
         store._connection.execute("PRAGMA user_version").fetchone()[0]
         == SCHEMA_VERSION

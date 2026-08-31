@@ -24,6 +24,9 @@ contextBridge.exposeInMainWorld("rndWorkbench", {
   chooseMeetingAudio() {
     return ipcRenderer.invoke("meeting:choose-audio");
   },
+  choosePilotMetricsExport() {
+    return ipcRenderer.invoke("pilot:export-metrics");
+  },
   onBackendEvent(callback) {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("backend:event", listener);

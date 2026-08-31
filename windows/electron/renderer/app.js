@@ -166,6 +166,13 @@ class PcmAudioPlayer {
     this.peak = 0;
     this.clippedSamples = 0;
     this.totalSamples = 0;
+    this.voiceTimingOriginMs = null;
+    this.firstAudioReported = false;
+  }
+
+  setVoiceTimingOrigin(originMs) {
+    this.voiceTimingOriginMs = Number.isFinite(originMs) ? originMs : null;
+    this.firstAudioReported = false;
   }
 
   attachContext(context) {
@@ -183,7 +190,10 @@ class PcmAudioPlayer {
   }
 
   start(event) {
-    this.stop();
+    const voiceTimingOriginMs = this.voiceTimingOriginMs;
+    this.stop("", true);
+    this.voiceTimingOriginMs = voiceTimingOriginMs;
+    this.firstAudioReported = false;
     const sampleRate = Number(event.sample_rate);
     if (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 48000) {
       throw new Error("Unsupported TTS sample rate");
@@ -229,6 +239,17 @@ class PcmAudioPlayer {
     source.connect(this.masterGain);
     const startTime = Math.max(this.context.currentTime + 0.02, this.nextStartTime);
     this.nextStartTime = startTime + buffer.duration;
+    if (!this.firstAudioReported && this.voiceTimingOriginMs !== null) {
+      const scheduledAtMs = performance.now()
+        + Math.max(0, startTime - this.context.currentTime) * 1000;
+      const seconds = Math.max(0, (scheduledAtMs - this.voiceTimingOriginMs) / 1000);
+      sendCommand("voice_diagnostic", {
+        kind: "playback_first_audio",
+        seconds: Number(seconds.toFixed(3)),
+        hardware_measured: true,
+      });
+      this.firstAudioReported = true;
+    }
     this.sources.add(source);
     source.onended = () => {
       this.sources.delete(source);
@@ -252,11 +273,13 @@ class PcmAudioPlayer {
   finishIfDrained() {
     if (this.ended && this.sources.size === 0) {
       state.speaking = false;
+      this.voiceTimingOriginMs = null;
+      this.firstAudioReported = false;
       if (state.listening) setVoicePhase("listening", "Слушаю…");
     }
   }
 
-  stop(reason = "") {
+  stop(reason = "", preserveTiming = false) {
     const wasSpeaking = state.speaking || this.sources.size > 0;
     const stopAt = this.context ? this.context.currentTime + 0.014 : 0;
     if (this.context && this.masterGain) {
@@ -277,8 +300,13 @@ class PcmAudioPlayer {
       sendCommand("voice_diagnostic", {
         kind: "playback_cancel_scheduled",
         fade_ms: 12,
+        reason,
         hardware_measured: false,
       });
+    }
+    if (!preserveTiming) {
+      this.voiceTimingOriginMs = null;
+      this.firstAudioReported = false;
     }
     if (state.listening) setVoicePhase("listening", "Слушаю…");
   }
@@ -317,85 +345,88 @@ class VoiceCaptureController {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) throw new Error("Web Audio недоступен");
     const generation = ++this.startGeneration;
+    const requestedAt = performance.now();
     this.starting = true;
-    let stream;
+    let stream = null;
+    let context = null;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: { ideal: 1 },
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: false,
-      },
-      video: false,
+        audio: {
+          channelCount: { ideal: 1 },
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: false,
+        },
+        video: false,
       });
-    } finally {
-      this.starting = false;
-    }
-    if (generation !== this.startGeneration) {
-      for (const track of stream.getTracks()) track.stop();
-      return;
-    }
-    const context = new AudioContextClass({ latencyHint: "interactive" });
-    try {
+      if (generation !== this.startGeneration) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
+      context = new AudioContextClass({ latencyHint: "interactive" });
       await context.resume();
-    } catch (error) {
-      for (const track of stream.getTracks()) track.stop();
-      this.requestId = null;
-      this.heldRequestId = null;
-      state.ptt.permission = "error";
-      state.ptt.phase = "error";
-      sendCommand("ptt_dictation_cancel", { request_id: requestId, reason: "audio_context_error" });
-      toast(`Диктовка F8: аудиоустройство недоступно (${error?.name || "Error"})`);
-      renderVoiceCapability();
-      return;
-    }
-    if (generation !== this.generation || this.heldRequestId !== requestId) {
-      for (const track of stream.getTracks()) track.stop();
-      await context.close();
-      this.requestId = null;
-      sendCommand("ptt_dictation_cancel", { request_id: requestId, reason: "released_during_audio_start" });
-      state.ptt.phase = "idle";
-      document.body.dataset.pttState = state.ptt.phase;
-      renderVoiceCapability();
-      return;
-    }
-    const source = context.createMediaStreamSource(stream);
-    const processor = context.createScriptProcessor(2048, 1, 1);
-    const muteGain = context.createGain();
-    muteGain.gain.value = 0;
-    processor.onaudioprocess = (event) => this.process(event.inputBuffer.getChannelData(0));
-    source.connect(processor);
-    processor.connect(muteGain);
-    muteGain.connect(context.destination);
+      if (generation !== this.startGeneration) {
+        for (const track of stream.getTracks()) track.stop();
+        if (context.state !== "closed") await context.close();
+        return;
+      }
+      const source = context.createMediaStreamSource(stream);
+      const processor = context.createScriptProcessor(2048, 1, 1);
+      const muteGain = context.createGain();
+      muteGain.gain.value = 0;
+      processor.onaudioprocess = (event) => this.process(event.inputBuffer.getChannelData(0));
+      source.connect(processor);
+      processor.connect(muteGain);
+      muteGain.connect(context.destination);
 
-    this.stream = stream;
-    this.context = context;
-    this.source = source;
-    this.processor = processor;
-    this.muteGain = muteGain;
-    this.active = true;
-    this.calibrationUntil = performance.now() + 600;
-    this.player.attachContext(context);
-    state.listening = true;
-    setVoicePhase("calibrating", "Проверяю уровень шума…");
-    sendCommand("voice_session_start", {
-      sample_rate: VOICE_SAMPLE_RATE,
-      encoding: "pcm_s16le",
-      channels: 1,
-      capture: {
+      this.stream = stream;
+      this.context = context;
+      this.source = source;
+      this.processor = processor;
+      this.muteGain = muteGain;
+      this.active = true;
+      this.calibrationUntil = performance.now() + 600;
+      this.player.attachContext(context);
+      state.listening = true;
+      setVoicePhase("calibrating", "Проверяю уровень шума…");
+      sendCommand("voice_session_start", {
+        sample_rate: VOICE_SAMPLE_RATE,
+        encoding: "pcm_s16le",
+        channels: 1,
+        capture: {
+          browser_sample_rate: context.sampleRate,
+          echo_cancellation_requested: true,
+          noise_suppression_requested: true,
+        },
+      });
+      sendCommand("voice_diagnostic", {
+        kind: "capture_ready",
         browser_sample_rate: context.sampleRate,
-        echo_cancellation_requested: true,
-        noise_suppression_requested: true,
-      },
-    });
-    sendCommand("voice_diagnostic", {
-      kind: "capture_ready",
-      browser_sample_rate: context.sampleRate,
-      target_sample_rate: VOICE_SAMPLE_RATE,
-      hardware_measured: true,
-    });
-    renderVoiceCapability();
+        target_sample_rate: VOICE_SAMPLE_RATE,
+        hardware_measured: true,
+      });
+      sendCommand("voice_diagnostic", {
+        kind: "listen_ready",
+        seconds: Number(((performance.now() - requestedAt) / 1000).toFixed(3)),
+        hardware_measured: true,
+      });
+      renderVoiceCapability();
+    } catch (error) {
+      for (const track of stream?.getTracks() || []) track.stop();
+      if (context && context.state !== "closed") await context.close();
+      if (generation === this.startGeneration) {
+        this.stream = null;
+        this.context = null;
+        this.source = null;
+        this.processor = null;
+        this.muteGain = null;
+        this.active = false;
+        state.listening = false;
+      }
+      throw error;
+    } finally {
+      if (generation === this.startGeneration) this.starting = false;
+    }
   }
 
   async stop({ notifyBackend = true } = {}) {
@@ -521,7 +552,12 @@ class VoiceCaptureController {
 
   endUtterance() {
     if (!this.utteranceActive) return;
-    sendCommand("voice_utterance_end", { duration_ms: Math.round(this.utteranceMs) });
+    const speechTailMs = Math.max(0, Math.min(2000, this.silenceMs));
+    this.player.setVoiceTimingOrigin(performance.now() - speechTailMs);
+    sendCommand("voice_utterance_end", {
+      duration_ms: Math.round(this.utteranceMs),
+      speech_tail_ms: Math.round(speechTailMs),
+    });
     sendCommand("voice_diagnostic", {
       kind: "capture_signal",
       peak: Number(this.capturePeak.toFixed(6)),
@@ -966,12 +1002,32 @@ function renderVoiceCapability() {
   }
 }
 
+function renderPilotMetrics() {
+  const summary = state.snapshot.pilot_metrics || {};
+  const metrics = summary.metrics || {};
+  const count = Number(summary.sample_count || 0);
+  byId("pilotMetricsCount").textContent = String(count);
+  const parts = [];
+  const transcript = metrics.transcript_ready_seconds;
+  const firstAudio = metrics.first_audio_seconds;
+  const listenReady = metrics.listen_ready_seconds;
+  const clipping = metrics.output_clipping_ratio;
+  if (listenReady) parts.push(`готовность p95 ${Number(listenReady.p95).toFixed(2)} с`);
+  if (transcript) parts.push(`текст p50/p95 ${Number(transcript.p50).toFixed(2)}/${Number(transcript.p95).toFixed(2)} с`);
+  if (firstAudio) parts.push(`звук p50/p95 ${Number(firstAudio.p50).toFixed(2)}/${Number(firstAudio.p95).toFixed(2)} с`);
+  if (clipping) parts.push(`клиппинг ${(Number(clipping.max) * 100).toFixed(3)}%`);
+  byId("pilotMetricsSummary").textContent = parts.length
+    ? parts.join(" · ")
+    : "Сделайте несколько голосовых запросов на этом устройстве.";
+}
+
 function renderSnapshot() {
   renderMessages();
   renderTasks();
   renderApprovals();
   renderRuntime();
   renderVoiceCapability();
+  renderPilotMetrics();
   byId("metricsLabel").textContent = state.metric;
 }
 
@@ -1130,6 +1186,9 @@ function handleBackendEvent(event) {
         byId("metricsLabel").textContent = state.metric;
         toast(String(event.message || "Не удалось распознать аудиозапись eXpress"));
         break;
+      case "pilot_metrics_exported":
+        toast("Обезличенная сводка качества сохранена");
+        break;
       case "capability_unavailable":
         if (event.capability === "push_to_talk") {
           state.ptt.sttAvailable = false;
@@ -1276,6 +1335,16 @@ async function chooseMeetingAudio() {
   }
 }
 
+async function exportPilotMetrics() {
+  try {
+    const reportPath = await window.rndWorkbench.choosePilotMetricsExport();
+    if (typeof reportPath !== "string" || !reportPath) return;
+    sendCommand("export_pilot_metrics", { path: reportPath });
+  } catch (_error) {
+    toast("Не удалось выбрать файл для сводки качества");
+  }
+}
+
 function fieldLooksSecure(element) {
   if (!(element instanceof HTMLElement)) return false;
   const values = [
@@ -1375,6 +1444,7 @@ byId("newTaskButton").addEventListener("click", () => sendCommand("new_task", { 
 byId("meetingAudioImportButton").addEventListener("click", () => void chooseMeetingAudio());
 byId("meetingTranscriptImportButton").addEventListener("click", () => void chooseMeetingTranscript());
 byId("synapseImportButton").addEventListener("click", () => void chooseSynapsePackage());
+byId("exportPilotMetricsButton").addEventListener("click", () => void exportPilotMetrics());
 byId("sendButton").addEventListener("click", sendText);
 byId("stopButton").addEventListener("click", () => {
   audioPlayer.stop("user_stop");

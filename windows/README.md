@@ -30,7 +30,7 @@ Faster-Whisper weights и loopback OmniVoice-Fast server Python-мост чес�
 | Java 21 action journal | Проверено локально и в CI | Согласованные production-действия получают metadata-only claim; повтор и конфликт блокируются, прерванный результат сверяется без повторного вызова |
 | Голосовой ввод, STT | Готово в исходниках | Electron WebAudio → mono PCM16/16 кГц, adaptive VAD/pre-roll и Faster-Whisper; нужен Windows hardware QA |
 | Глобальная диктовка | Готово в исходниках | Удержание F8 записывает речь, отпускание вставляет текст через UI Automation/SendInput; secure fields отклоняются, нужен Windows hardware QA |
-| TTS, единый голос, перебивание | Готово в исходниках | Один короткий OmniVoice-Fast запрос с фиксированными profile/seed, PCM stream, limiter, 12-мс fade и barge-in; акустические SLO не измерены |
+| TTS, единый голос, перебивание | Готово в исходниках | Один короткий OmniVoice-Fast запрос с фиксированными profile/seed, PCM stream, limiter, 12-мс fade и barge-in; локальная агрегированная диагностика готова, акустические SLO на реальном устройстве не подтверждены |
 | Импорт встреч eXpress | Готово в исходниках | Локальный Faster-Whisper обрабатывает выбранный аудиофайл; также доступны готовый транскрипт и быстрый ZIP с описанием/вложениями без ручного manifest. Нужен Windows hardware QA |
 | Jira / Kaiten / Confluence / почта / календарь | Не подключено | Нужны корпоративные API, OAuth/SSO и тестовые стенды |
 | Voice-ready portable QA artifact | Проверено в CI | Frozen backend импортирует Faster-Whisper, CTranslate2 и Tokenizers, запускает bundled Java route gate и action journal probe; artifact хранится семь дней |
@@ -101,7 +101,9 @@ $env:RND_WORKBENCH_WINDOWS_STT_DEVICE = "cpu" # либо cuda в подгото�
 
 Приложение не скачивает веса и не запускает неподписанный server скрытно. В
 диагностике отдельно видны готовность capture, STT и TTS. Полный ответ остаётся
-в чате; голосом воспроизводится одна законченная реплика до 220 символов.
+в чате; голосом воспроизводится одна законченная реплика до 220 символов. Полное
+окно показывает обезличенную 14-дневную сводку задержек и сигнала; JSON-экспорт
+не содержит запросы, транскрипты, ответы или идентификаторы сессий.
 
 В настройках выберите один из маршрутов:
 

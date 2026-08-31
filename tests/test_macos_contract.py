@@ -120,6 +120,18 @@ def test_routing_metrics_and_non_mutating_fallback_are_visible_in_swift_ui() -> 
     assert 'settings["llm_mode"]' not in fallback_block
 
 
+def test_macos_settings_expose_content_free_pilot_metrics_and_json_export() -> None:
+    source = SWIFT_SOURCE.read_text(encoding="utf-8")
+
+    assert "@Published private(set) var pilotMetrics: [String: Any] = [:]" in source
+    assert 'pilotMetrics = (data["pilot_metrics"] as? [String: Any]) ?? [:]' in source
+    assert 'Section("Качество пилота")' in source
+    assert "controller.pilotMetricsSummaryLabel" in source
+    assert "func exportPilotMetrics()" in source
+    assert '"command": "export_pilot_metrics"' in source
+    assert "без запросов, транскриптов, ответов и идентификаторов сессий" in source
+
+
 def test_java_action_journal_and_reconciliation_are_visible_in_settings() -> None:
     source = SWIFT_SOURCE.read_text(encoding="utf-8")
 

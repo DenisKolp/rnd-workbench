@@ -683,6 +683,17 @@ ipcMain.handle("meeting:choose-audio", async (event) => {
   if (selection.canceled || selection.filePaths.length !== 1) return null;
   return selection.filePaths[0];
 });
+ipcMain.handle("pilot:export-metrics", async (event) => {
+  if (!isTrustedRendererEvent(event) || !mainWindow) return null;
+  const selection = await dialog.showSaveDialog(mainWindow, {
+    title: "Экспортировать обезличенную сводку качества",
+    buttonLabel: "Сохранить",
+    defaultPath: path.join(app.getPath("documents"), "RnD-Workbench-pilot-metrics.json"),
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (selection.canceled || !selection.filePath) return null;
+  return selection.filePath;
+});
 ipcMain.on("ptt:renderer-insertion-result", (event, payload) => {
   if (!isTrustedRendererEvent(event) || !payload || typeof payload !== "object") return;
   const requestId = typeof payload.requestId === "string" ? payload.requestId : "";

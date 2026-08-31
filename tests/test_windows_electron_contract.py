@@ -83,6 +83,23 @@ def test_voice_ui_is_capability_gated_and_uses_bounded_pcm_contract() -> None:
     )
 
 
+def test_compact_voice_start_is_isolated_from_f8_dictation_state() -> None:
+    source = RENDERER.read_text(encoding="utf-8")
+    voice_capture = source.split("class VoiceCaptureController", maxsplit=1)[1].split(
+        "class PushToTalkDictationController", maxsplit=1
+    )[0]
+
+    assert voice_capture.count("generation !== this.startGeneration") == 2
+    assert "this.requestId" not in voice_capture
+    assert "this.heldRequestId" not in voice_capture
+    assert "this.generation" not in voice_capture
+    assert "requestId" not in voice_capture
+    assert "state.ptt" not in voice_capture
+    assert 'sendCommand("ptt_dictation_cancel"' not in voice_capture
+    assert "if (context.state !== \"closed\") await context.close()" in voice_capture
+    assert "if (generation === this.startGeneration) this.starting = false" in voice_capture
+
+
 def test_streaming_tts_playback_has_limiter_and_click_free_barge_in_fade() -> None:
     source = RENDERER.read_text(encoding="utf-8")
     assert "createDynamicsCompressor()" in source
@@ -95,6 +112,11 @@ def test_streaming_tts_playback_has_limiter_and_click_free_barge_in_fade() -> No
     assert 'case "audio_cancel"' in source
     assert 'kind: "playback_signal"' in source
     assert 'kind: "playback_cancel_scheduled"' in source
+    assert 'kind: "playback_first_audio"' in source
+    assert "scheduledAtMs - this.voiceTimingOriginMs" in source
+    assert "this.player.setVoiceTimingOrigin(performance.now() - speechTailMs)" in source
+    assert "speech_tail_ms: Math.round(speechTailMs)" in source
+    assert "reason," in source
     assert 'hardware_measured: false' in source
 
 
@@ -109,6 +131,23 @@ def test_media_permission_is_audio_only_and_ipc_rejects_large_audio_blocks() -> 
     renderer = RENDERER.read_text(encoding="utf-8")
     assert 'kind: "capture_ready"' in renderer
     assert 'kind: "capture_signal"' in renderer
+    assert 'kind: "listen_ready"' in renderer
+    assert "performance.now() - requestedAt" in renderer
+
+
+def test_pilot_voice_metrics_are_visible_and_exported_via_trusted_save_dialog() -> None:
+    main = MAIN.read_text(encoding="utf-8")
+    preload = PRELOAD.read_text(encoding="utf-8")
+    renderer = RENDERER.read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+
+    assert 'ipcMain.handle("pilot:export-metrics"' in main
+    assert "dialog.showSaveDialog" in main
+    assert 'ipcRenderer.invoke("pilot:export-metrics")' in preload
+    assert 'sendCommand("export_pilot_metrics"' in renderer
+    assert "state.snapshot.pilot_metrics" in renderer
+    assert 'id="pilotMetricsSummary"' in html
+    assert "без запросов, транскриптов и ответов" in html
 
 
 def test_compact_chat_state_stops_hidden_microphone_capture() -> None:

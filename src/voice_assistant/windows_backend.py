@@ -45,7 +45,7 @@ from .java_core import (
 )
 from .integrations import SafeIntegrationHub
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
-from .store import AssistantStore
+from .store import AssistantStore, new_id
 from .text import SentenceChunker, SpeechExcerptBuilder, normalize_for_omnivoice_speech
 
 
@@ -850,9 +850,10 @@ class WindowsPilotBackend:
             "java_core_reason": "not_started",
         }
         self._voice_session_active = False
+        self._pilot_session_id = new_id()
         self._voice_input: bytearray | None = None
         self._voice_expected_sequence = 0
-        self._pending_voice_audio: bytes | None = None
+        self._pending_voice_audio: tuple[bytes, float] | None = None
         self._pending_voice_worker: threading.Thread | None = None
         self._dictation_input: bytearray | None = None
         self._dictation_expected_sequence = 0
@@ -985,6 +986,8 @@ class WindowsPilotBackend:
             self.import_meeting_audio(command)
         elif name == "voice_diagnostic":
             self.accept_voice_diagnostic(command)
+        elif name == "export_pilot_metrics":
+            self.export_pilot_metrics(command)
         elif name == "snapshot":
             self.emit_snapshot()
         elif name in {"clear", "new_task"}:
@@ -1508,8 +1511,10 @@ class WindowsPilotBackend:
         """Relay a strictly bounded set of non-secret renderer measurements."""
 
         allowed_kinds = {
+            "listen_ready",
             "capture_ready",
             "capture_signal",
+            "playback_first_audio",
             "playback_signal",
             "playback_cancel_scheduled",
         }
@@ -1524,6 +1529,7 @@ class WindowsPilotBackend:
             "clipped_samples",
             "total_samples",
             "fade_ms",
+            "seconds",
             "hardware_measured",
         ):
             value = command.get(key)
@@ -1537,6 +1543,85 @@ class WindowsPilotBackend:
             check=kind,
             metrics=metrics,
         )
+        measurement_scope = (
+            "device" if metrics.get("hardware_measured") is True else "software"
+        )
+        if kind == "listen_ready" and "seconds" in metrics:
+            self._record_pilot_metric(
+                "listen_ready_seconds",
+                float(metrics["seconds"]),
+                measurement_scope=measurement_scope,
+            )
+        elif kind == "playback_first_audio" and "seconds" in metrics:
+            self._record_pilot_metric(
+                "first_audio_seconds",
+                float(metrics["seconds"]),
+                measurement_scope=measurement_scope,
+            )
+        elif kind in {"capture_signal", "playback_signal"}:
+            prefix = "input" if kind == "capture_signal" else "output"
+            if "peak" in metrics:
+                self._record_pilot_metric(
+                    f"{prefix}_peak",
+                    max(0.0, float(metrics["peak"])),
+                    measurement_scope=measurement_scope,
+                )
+            total_samples = int(metrics.get("total_samples") or 0)
+            clipped_samples = int(metrics.get("clipped_samples") or 0)
+            if total_samples > 0 and 0 <= clipped_samples <= total_samples:
+                self._record_pilot_metric(
+                    f"{prefix}_clipping_ratio",
+                    clipped_samples / total_samples,
+                    measurement_scope=measurement_scope,
+                )
+        elif kind == "playback_cancel_scheduled" and "fade_ms" in metrics:
+            reason = str(command.get("reason") or "")
+            if reason in {"barge_in", "interrupted"}:
+                self._record_pilot_metric(
+                    "barge_in_stop_seconds",
+                    max(0.0, float(metrics["fade_ms"])) / 1_000,
+                    measurement_scope="software",
+                    outcome="cancelled",
+                )
+
+    def export_pilot_metrics(self, command: dict[str, Any]) -> None:
+        raw_path = str(command.get("path") or "").strip()
+        if not raw_path or len(raw_path) > 4_096:
+            raise ValueError("Не указан путь для отчёта пилота")
+        destination = self.store.export_pilot_metrics(
+            Path(raw_path), days=14, platform="windows"
+        )
+        self.emitter.emit("pilot_metrics_exported", path=str(destination))
+
+    def _record_pilot_metric(
+        self,
+        metric: str,
+        value: float,
+        *,
+        measurement_scope: str = "software",
+        outcome: str = "ok",
+    ) -> None:
+        try:
+            route = self._runtime().get("provider_type") or "unknown"
+            if route not in {"local", "corporate", "external"}:
+                route = "unknown"
+            self.store.record_pilot_metric(
+                self._pilot_session_id,
+                "windows",
+                metric,
+                value,
+                measurement_scope=measurement_scope,
+                route=str(route),
+                outcome=outcome,
+            )
+        except Exception as exc:
+            self.emitter.emit(
+                "diagnostic",
+                component="pilot_metrics",
+                check="store_failed",
+                measured=True,
+                error_type=type(exc).__name__,
+            )
 
     def start_voice_session(self, command: dict[str, Any]) -> None:
         if not self._voice_runtime.ready:
@@ -1611,16 +1696,24 @@ class WindowsPilotBackend:
         self._voice_expected_sequence += 1
 
     def finish_voice_utterance(self, command: dict[str, Any]) -> None:
-        del command
         if self._voice_input is None:
             raise RuntimeError("Нет активной голосовой реплики")
+        speech_tail_ms = command.get("speech_tail_ms", 0)
+        if (
+            isinstance(speech_tail_ms, bool)
+            or not isinstance(speech_tail_ms, (int, float))
+            or not np.isfinite(speech_tail_ms)
+            or not 0 <= speech_tail_ms <= 2_000
+        ):
+            raise ValueError("Некорректная длительность тишины после речи")
+        response_started_at = time.perf_counter() - float(speech_tail_ms) / 1_000
         audio = bytes(self._voice_input)
         self._voice_input = None
         if len(audio) < self._VOICE_SAMPLE_RATE * 2 // 5:
             self.emitter.emit("state", state="listening", detail="Слушаю…")
             self.emitter.emit("speech_ignored", reason="too_short")
             return
-        self._queue_voice_turn(audio)
+        self._queue_voice_turn(audio, response_started_at)
 
     @staticmethod
     def _validated_request_id(command: dict[str, Any]) -> str:
@@ -1825,7 +1918,7 @@ class WindowsPilotBackend:
                     self._dictation_worker = None
                     self._dictation_worker_request_id = None
 
-    def _queue_voice_turn(self, audio: bytes) -> None:
+    def _queue_voice_turn(self, audio: bytes, response_started_at: float) -> None:
         worker_to_start: threading.Thread | None = None
         waiter_to_start: threading.Thread | None = None
         with self._lock:
@@ -1833,7 +1926,7 @@ class WindowsPilotBackend:
             if busy:
                 # Barge-in keeps only the newest complete utterance while the
                 # cancelled STT/LLM thread releases its resources.
-                self._pending_voice_audio = audio
+                self._pending_voice_audio = (audio, response_started_at)
                 if self._pending_voice_worker is None or not self._pending_voice_worker.is_alive():
                     waiter_to_start = threading.Thread(
                         target=self._wait_for_voice_slot,
@@ -1845,7 +1938,7 @@ class WindowsPilotBackend:
                 cancel_event = threading.Event()
                 worker_to_start = threading.Thread(
                     target=self._run_voice_turn,
-                    args=(audio, cancel_event),
+                    args=(audio, cancel_event, response_started_at),
                     name="windows-voice-turn",
                     daemon=True,
                 )
@@ -1882,14 +1975,15 @@ class WindowsPilotBackend:
                 continue
             worker_to_start: threading.Thread | None = None
             with self._lock:
-                audio = self._pending_voice_audio
+                pending = self._pending_voice_audio
                 self._pending_voice_audio = None
                 self._pending_voice_worker = None
-                if audio is not None and self._voice_session_active:
+                if pending is not None and self._voice_session_active:
+                    audio, response_started_at = pending
                     cancel_event = threading.Event()
                     worker_to_start = threading.Thread(
                         target=self._run_voice_turn,
-                        args=(audio, cancel_event),
+                        args=(audio, cancel_event, response_started_at),
                         name="windows-voice-turn",
                         daemon=True,
                     )
@@ -1899,7 +1993,12 @@ class WindowsPilotBackend:
                 worker_to_start.start()
             return
 
-    def _run_voice_turn(self, audio: bytes, cancel_event: threading.Event) -> None:
+    def _run_voice_turn(
+        self,
+        audio: bytes,
+        cancel_event: threading.Event,
+        response_started_at: float,
+    ) -> None:
         started = time.perf_counter()
         delegated = False
         try:
@@ -1912,7 +2011,21 @@ class WindowsPilotBackend:
             if cancel_event.is_set():
                 return
             stt_seconds = round(time.perf_counter() - started, 3)
+            transcript_ready_seconds = round(
+                time.perf_counter() - response_started_at, 3
+            )
             self.emitter.emit("metric", name="stt", seconds=stt_seconds)
+            self.emitter.emit(
+                "metric",
+                name="voice_transcript_ready",
+                seconds=transcript_ready_seconds,
+            )
+            self._record_pilot_metric("stt_compute_seconds", stt_seconds)
+            self._record_pilot_metric(
+                "transcript_ready_seconds",
+                transcript_ready_seconds,
+                measurement_scope="device",
+            )
             if not transcript:
                 self.emitter.emit("speech_ignored", reason="empty_transcript")
                 return
@@ -1922,7 +2035,7 @@ class WindowsPilotBackend:
                 transcript,
                 cancel_event,
                 spoken=True,
-                voice_turn_started_at=started,
+                voice_turn_started_at=response_started_at,
             )
         except BaseException as exc:
             if not cancel_event.is_set():
@@ -2108,11 +2221,19 @@ class WindowsPilotBackend:
             performance = {"total_seconds": total_seconds}
             if first_token_seconds is not None:
                 performance["first_token_seconds"] = first_token_seconds
+                if voice_turn_started_at is not None:
+                    self._record_pilot_metric(
+                        "first_token_seconds", first_token_seconds
+                    )
             if speech_result["first_audio_seconds"] is not None:
                 performance["first_audio_seconds"] = speech_result["first_audio_seconds"]
             if voice_turn_started_at is not None:
                 performance["voice_total_seconds"] = round(
                     time.perf_counter() - voice_turn_started_at, 3
+                )
+                self._record_pilot_metric(
+                    "response_total_seconds",
+                    performance["voice_total_seconds"],
                 )
             self.emitter.emit(
                 "metric",
@@ -2174,6 +2295,12 @@ class WindowsPilotBackend:
                 performance = {"total_seconds": total_seconds}
                 if first_token_seconds is not None:
                     performance["first_token_seconds"] = first_token_seconds
+                if voice_turn_started_at is not None:
+                    self._record_pilot_metric(
+                        "response_total_seconds",
+                        time.perf_counter() - voice_turn_started_at,
+                        outcome="cancelled",
+                    )
                 route = self._route_metadata()
                 self.emitter.emit(
                     "metric",
