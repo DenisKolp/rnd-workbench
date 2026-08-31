@@ -3,7 +3,7 @@
 Инкрементальный платформенно-независимый слой доменных политик RnD Workbench.
 Модуль не заменяет существующее приложение и не переносит ML inference в JVM.
 Версия компонента — `0.1.0-SNAPSHOT`; он разрабатывается в рамках продуктового
-milestone `0.9.1` и не является отдельным релизом. Windows Electron и macOS
+milestone `0.9.2` и не является отдельным релизом. Windows Electron и macOS
 Swift packages уже используют его для model routing и durable action journal,
 а production-коннекторы остаются следующим этапом миграции.
 

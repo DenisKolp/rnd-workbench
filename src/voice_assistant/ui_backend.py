@@ -35,6 +35,7 @@ from .java_core import (
 )
 from .integrations import SafeIntegrationHub
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
+from .preflight import PilotPreflightInputs, build_pilot_preflight
 from .store import AssistantStore, new_id
 from .synapse import SynapseImportInProgressError, SynapseRepairRequiredError
 from .text import concise_speech_text
@@ -80,6 +81,7 @@ class UIBackend:
         self._local_chat = self.assistant.local_chat
         data_path = Path(os.environ.get("LOCAL_ASSISTANT_DATA", "data/assistant.sqlite3"))
         self.store = store or AssistantStore(data_path)
+        self._storage_health = self.store.health_check()
         self.orchestrator = LocalOrchestrator(self.store)
         self._core_policy = (
             core_policy
@@ -112,6 +114,7 @@ class UIBackend:
         self.shutdown_event = threading.Event()
         self._pilot_session_id = new_id()
         self._voice_session_requested_at: float | None = None
+        self._microphone_verified = False
         self.session_thread: threading.Thread | None = None
         self.dictation_thread: threading.Thread | None = None
         self.dictation_release_event = threading.Event()
@@ -219,6 +222,8 @@ class UIBackend:
             self.emit_snapshot()
         elif name == "export_pilot_metrics":
             self.export_pilot_metrics(command)
+        elif name == "pilot_preflight":
+            self.run_pilot_preflight()
         elif name == "select_workspace":
             workspace_id = str(command.get("id", ""))
             self.store.get_workspace(workspace_id)
@@ -1454,6 +1459,58 @@ class UIBackend:
         )
         self.emitter.emit("pilot_metrics_exported", path=str(destination))
 
+    def _tts_ready_for_preflight(self) -> bool:
+        tts = getattr(self.assistant, "tts", None)
+        if tts is None:
+            return False
+        process = getattr(tts, "_process", None)
+        if process is not None:
+            return process.poll() is None
+        if getattr(tts, "model", None) is not None:
+            return True
+        return type(tts).__name__ == "MacOSSayTTS"
+
+    def _build_pilot_preflight(
+        self,
+        metrics_summary: dict[str, Any] | None = None,
+        *,
+        refresh_storage: bool = False,
+    ) -> dict[str, Any]:
+        if refresh_storage:
+            self._storage_health = self.store.health_check()
+        storage = self._storage_health
+        runtime = self._llm_runtime()
+        java_policy = self._core_policy.diagnostics()
+        action_journal = self.integration_hub.action_journal_diagnostics()
+        return build_pilot_preflight(
+            PilotPreflightInputs(
+                platform="macos",
+                storage_ready=bool(storage["ready"]),
+                llm_ready=bool(runtime["ready"]),
+                stt_ready=(
+                    getattr(getattr(self.assistant, "stt", None), "model", None)
+                    is not None
+                ),
+                tts_ready=self._tts_ready_for_preflight(),
+                microphone_verified=self._microphone_verified,
+                java_policy_ready=bool(java_policy.get("ready")),
+                action_journal_ready=bool(action_journal.get("ready")),
+                connected_systems=self.integration_hub.connected_systems(),
+                manual_meeting_import_ready=True,
+                distribution_verified=False,
+                metrics_summary=(
+                    metrics_summary
+                    if metrics_summary is not None
+                    else self.store.pilot_metrics_summary(platform="macos")
+                ),
+            )
+        )
+
+    def run_pilot_preflight(self) -> None:
+        result = self._build_pilot_preflight(refresh_storage=True)
+        self.emitter.emit("pilot_preflight", result=result)
+        self.emit_snapshot()
+
     def _record_pilot_metric(
         self,
         metric: str,
@@ -2113,6 +2170,7 @@ class UIBackend:
                     threshold=round(threshold, 4),
                     mode=calibration_mode,
                 )
+                self._microphone_verified = True
                 if self._voice_session_requested_at is not None:
                     self._record_pilot_metric(
                         "listen_ready_seconds",
@@ -3258,6 +3316,9 @@ class UIBackend:
                 "recovery": dict(self._action_recovery),
             },
         }
+        snapshot["pilot_preflight"] = self._build_pilot_preflight(
+            snapshot.get("pilot_metrics")
+        )
         snapshot["model"] = (
             f"{runtime['model']} · "
             + (

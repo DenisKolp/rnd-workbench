@@ -45,6 +45,7 @@ from .java_core import (
 )
 from .integrations import SafeIntegrationHub
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
+from .preflight import PilotPreflightInputs, build_pilot_preflight
 from .store import AssistantStore, new_id
 from .text import SentenceChunker, SpeechExcerptBuilder, normalize_for_omnivoice_speech
 
@@ -820,6 +821,7 @@ class WindowsPilotBackend:
     ) -> None:
         self.emitter = emitter
         self.store = AssistantStore(data_path)
+        self._storage_health = self.store.health_check()
         self.orchestrator = LocalOrchestrator(self.store)
         snapshot = self.store.snapshot()
         self.current_workspace_id = str(snapshot["current_workspace_id"])
@@ -850,6 +852,7 @@ class WindowsPilotBackend:
             "java_core_reason": "not_started",
         }
         self._voice_session_active = False
+        self._microphone_verified = False
         self._pilot_session_id = new_id()
         self._voice_input: bytearray | None = None
         self._voice_expected_sequence = 0
@@ -965,6 +968,8 @@ class WindowsPilotBackend:
                 measured=False,
                 detail="Нужен запуск на реальном Windows-устройстве",
             )
+        elif name == "pilot_preflight":
+            self.run_pilot_preflight()
         elif name == "ptt_capabilities":
             self.emit_dictation_capability()
         elif name == "ptt_dictation_start":
@@ -1543,6 +1548,8 @@ class WindowsPilotBackend:
             check=kind,
             metrics=metrics,
         )
+        if kind == "capture_ready" and metrics.get("hardware_measured") is True:
+            self._microphone_verified = True
         measurement_scope = (
             "device" if metrics.get("hardware_measured") is True else "software"
         )
@@ -1592,6 +1599,45 @@ class WindowsPilotBackend:
             Path(raw_path), days=14, platform="windows"
         )
         self.emitter.emit("pilot_metrics_exported", path=str(destination))
+
+    def _build_pilot_preflight(
+        self,
+        metrics_summary: dict[str, Any] | None = None,
+        *,
+        refresh_storage: bool = False,
+    ) -> dict[str, Any]:
+        if refresh_storage:
+            self._storage_health = self.store.health_check()
+        storage = self._storage_health
+        runtime = self._runtime()
+        voice = self._voice_runtime.diagnostics()
+        java_policy = self._core_policy.diagnostics()
+        action_journal = self.integration_hub.action_journal_diagnostics()
+        return build_pilot_preflight(
+            PilotPreflightInputs(
+                platform="windows",
+                storage_ready=bool(storage["ready"]),
+                llm_ready=bool(runtime["ready"]),
+                stt_ready=bool(voice.get("stt", {}).get("ready")),
+                tts_ready=bool(voice.get("tts", {}).get("ready")),
+                microphone_verified=self._microphone_verified,
+                java_policy_ready=bool(java_policy.get("ready")),
+                action_journal_ready=bool(action_journal.get("ready")),
+                connected_systems=self.integration_hub.connected_systems(),
+                manual_meeting_import_ready=True,
+                distribution_verified=False,
+                metrics_summary=(
+                    metrics_summary
+                    if metrics_summary is not None
+                    else self.store.pilot_metrics_summary(platform="windows")
+                ),
+            )
+        )
+
+    def run_pilot_preflight(self) -> None:
+        result = self._build_pilot_preflight(refresh_storage=True)
+        self.emitter.emit("pilot_preflight", result=result)
+        self.emit_snapshot()
 
     def _record_pilot_metric(
         self,
@@ -2678,6 +2724,9 @@ class WindowsPilotBackend:
                 "recovery": dict(self._action_recovery),
             },
         }
+        snapshot["pilot_preflight"] = self._build_pilot_preflight(
+            snapshot.get("pilot_metrics")
+        )
         self.emitter.emit("snapshot", data=snapshot)
 
     def _restore_chat(self) -> None:

@@ -125,11 +125,36 @@ def test_macos_settings_expose_content_free_pilot_metrics_and_json_export() -> N
 
     assert "@Published private(set) var pilotMetrics: [String: Any] = [:]" in source
     assert 'pilotMetrics = (data["pilot_metrics"] as? [String: Any]) ?? [:]' in source
-    assert 'Section("Качество пилота")' in source
+    assert 'Section("Качество и готовность пилота")' in source
     assert "controller.pilotMetricsSummaryLabel" in source
     assert "func exportPilotMetrics()" in source
     assert '"command": "export_pilot_metrics"' in source
     assert "без запросов, транскриптов, ответов и идентификаторов сессий" in source
+
+
+def test_macos_settings_expose_dynamic_content_free_pilot_preflight() -> None:
+    source = SWIFT_SOURCE.read_text(encoding="utf-8")
+
+    assert "struct PilotPreflightCheckRecord" in source
+    assert '@Published private(set) var pilotPreflightOverall = "limited"' in source
+    assert 'data["pilot_preflight"] as? [String: Any]' in source
+    assert 'case "pilot_preflight":' in source
+    assert 'Section("Качество и готовность пилота")' in source
+    assert "controller.pilotPreflightChecks" in source
+    assert 'send(["command": "pilot_preflight"])' in source
+    assert "без запросов, транскриптов и ответов" in source
+
+
+def test_compact_and_global_surfaces_do_not_show_detached_quick_actions() -> None:
+    source = SWIFT_SOURCE.read_text(encoding="utf-8")
+
+    assert "var compactActivityLabel: String" in source
+    assert "Text(controller.compactActivityLabel)" in source
+    assert "UniversalComposer(controller: controller, showQuickActions: false)" in source
+    compact_chat = source.split("private var chatPanel: some View", maxsplit=1)[1].split(
+        "private var compactConversationHeight", maxsplit=1
+    )[0]
+    assert "QuickActionsBar(" not in compact_chat
 
 
 def test_java_action_journal_and_reconciliation_are_visible_in_settings() -> None:
@@ -199,7 +224,7 @@ def test_compact_voice_widget_keeps_latest_turn_visible_and_controls_accessible(
     assert "controller.firstAudioSeconds" in compact
     assert 'Text("Звук \\(value, specifier: \"%.2f\")с")' in compact
     assert ".onChange(of: controller.messages.last?.text)" in compact
-    assert ".onChange(of: controller.quickActions.count)" in compact
+    assert ".onChange(of: controller.quickActions.count)" not in compact
     assert ".accessibilityLabel(controller.voiceSessionActionLabel)" in compact
     assert ".accessibilityHint(controller.voiceSessionActionHint)" in compact
     assert ".accessibilityValue(controller.voiceSessionAccessibilityValue)" in compact
@@ -346,7 +371,7 @@ def test_macos_build_links_global_input_frameworks_and_advances_build_number() -
     assert "--compress=zip-6" in build
     assert "verify_java_core_bridge.py" in build
     assert "--external-models-enabled" in build
-    assert "<string>9</string>" in plist
+    assert "<string>10</string>" in plist
 
 
 def test_macos_app_launches_bundled_java_policy_and_shows_safe_fallback() -> None:

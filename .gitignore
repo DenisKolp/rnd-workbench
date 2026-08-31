@@ -65,6 +65,7 @@ runtime/
 vendor/
 windows/dist/
 artifacts/
+audits/
 
 # Local development context. Durable records and upstream-generated templates
 # can contain internal roadmap data or UNLICENSED upstream material.

@@ -1043,6 +1043,49 @@ def test_voice_self_check_does_not_claim_unmeasured_windows_hardware_slo(tmp_pat
     assert all(isinstance(value, bool) for value in dependency_probe["components"].values())
 
 
+def test_windows_pilot_preflight_is_dynamic_content_free_and_honest(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        chat_factory=fake_factory,
+        voice_runtime=FakeVoiceRuntime(),
+        core_policy=FakeCorePolicy(),
+    )
+    backend.configure_llm(
+        {
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "qwen3:4b",
+            "provider_type": "local",
+        }
+    )
+    backend.accept_voice_diagnostic(
+        {
+            "kind": "capture_ready",
+            "browser_sample_rate": 48_000,
+            "target_sample_rate": 16_000,
+            "hardware_measured": True,
+            "transcript": "НЕ СОХРАНЯТЬ",
+        }
+    )
+
+    backend.handle({"command": "pilot_preflight"})
+
+    event = next(item for item in emitter.events if item["type"] == "pilot_preflight")
+    result = event["result"]
+    statuses = {check["id"]: check["status"] for check in result["checks"]}
+    assert result["overall"] == "limited"
+    assert result["content_transmitted"] is False
+    assert statuses["storage"] == "pass"
+    assert statuses["llm"] == "pass"
+    assert statuses["stt"] == "pass"
+    assert statuses["tts"] == "pass"
+    assert statuses["microphone"] == "pass"
+    assert statuses["voice_slo"] == "unverified"
+    assert statuses["corporate_connectors"] == "warn"
+    assert "НЕ СОХРАНЯТЬ" not in json.dumps(result, ensure_ascii=False)
+
+
 def test_push_to_talk_capability_requires_only_local_stt(tmp_path) -> None:
     emitter = CapturingEmitter()
     backend = WindowsPilotBackend(

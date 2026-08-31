@@ -1021,6 +1021,44 @@ function renderPilotMetrics() {
     : "Сделайте несколько голосовых запросов на этом устройстве.";
 }
 
+function renderPilotPreflight() {
+  const report = state.snapshot.pilot_preflight || {};
+  const checks = Array.isArray(report.checks) ? report.checks : [];
+  const overall = String(report.overall || "unknown");
+  const overallLabels = {
+    ready: "Готово",
+    limited: "Ограниченно",
+    blocked: "Не готово",
+    unknown: "Проверяю",
+  };
+  const counts = report.counts || {};
+  const blockers = Number(counts.block || 0);
+  const pending = Number(counts.warn || 0) + Number(counts.unverified || 0);
+  byId("pilotPreflightOverall").textContent = overallLabels[overall] || "Проверяю";
+  byId("pilotPreflightSummary").textContent = checks.length
+    ? `Проверок: ${checks.length} · блокирует: ${blockers} · требует внимания: ${pending}`
+    : "Определяю готовность этой установки к пилоту.";
+  const list = byId("pilotPreflightList");
+  list.replaceChildren();
+  const styles = {
+    pass: { className: "ready", symbol: "✓" },
+    warn: { className: "planned", symbol: "!" },
+    block: { className: "error", symbol: "×" },
+    unverified: { className: "partial", symbol: "?" },
+  };
+  for (const check of checks) {
+    const style = styles[String(check.status)] || styles.unverified;
+    const row = textNode("li", style.className, "");
+    row.append(textNode("span", "", style.symbol));
+    const copy = textNode("div", "", "");
+    copy.append(textNode("strong", "", String(check.title || "Проверка")));
+    const detail = [check.detail, check.action].filter(Boolean).join(" ");
+    copy.append(textNode("small", "", detail));
+    row.append(copy);
+    list.append(row);
+  }
+}
+
 function renderSnapshot() {
   renderMessages();
   renderTasks();
@@ -1028,6 +1066,7 @@ function renderSnapshot() {
   renderRuntime();
   renderVoiceCapability();
   renderPilotMetrics();
+  renderPilotPreflight();
   byId("metricsLabel").textContent = state.metric;
 }
 
@@ -1188,6 +1227,12 @@ function handleBackendEvent(event) {
         break;
       case "pilot_metrics_exported":
         toast("Обезличенная сводка качества сохранена");
+        break;
+      case "pilot_preflight":
+        if (event.result && typeof event.result === "object") {
+          state.snapshot.pilot_preflight = event.result;
+          renderPilotPreflight();
+        }
         break;
       case "capability_unavailable":
         if (event.capability === "push_to_talk") {
@@ -1445,6 +1490,7 @@ byId("meetingAudioImportButton").addEventListener("click", () => void chooseMeet
 byId("meetingTranscriptImportButton").addEventListener("click", () => void chooseMeetingTranscript());
 byId("synapseImportButton").addEventListener("click", () => void chooseSynapsePackage());
 byId("exportPilotMetricsButton").addEventListener("click", () => void exportPilotMetrics());
+byId("pilotPreflightButton").addEventListener("click", () => sendCommand("pilot_preflight"));
 byId("sendButton").addEventListener("click", sendText);
 byId("stopButton").addEventListener("click", () => {
   audioPlayer.stop("user_stop");

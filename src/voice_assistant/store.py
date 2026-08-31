@@ -4484,6 +4484,22 @@ class AssistantStore:
     def settings(self) -> dict[str, str]:
         return {row["key"]: row["value"] for row in self._rows("SELECT * FROM settings")}
 
+    def health_check(self) -> dict[str, Any]:
+        """Return content-free storage health for the local pilot preflight."""
+
+        with self._lock:
+            integrity_row = self._connection.execute("PRAGMA quick_check").fetchone()
+            schema_row = self._connection.execute("PRAGMA user_version").fetchone()
+        integrity = str(integrity_row[0] if integrity_row else "unknown")
+        schema_version = int(schema_row[0] if schema_row else 0)
+        return {
+            "ready": integrity == "ok" and schema_version == SCHEMA_VERSION,
+            "integrity": "ok" if integrity == "ok" else "error",
+            "schema_version": schema_version,
+            "expected_schema_version": SCHEMA_VERSION,
+            "content_transmitted": False,
+        }
+
     def record_pilot_metric(
         self,
         session_id: str,

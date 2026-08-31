@@ -111,15 +111,15 @@
             <button class="secondary-button" id="exportPilotMetricsButton" type="button">Экспорт сводки JSON</button>
             <small>Только агрегаты задержек и сигнала — без запросов, транскриптов и ответов.</small>
           </div>
-          <ul class="readiness-list">
-            <li class="ready"><span>✓</span><div><strong>Electron UI</strong><small>Один процесс окна, compact ↔ full</small></div></li>
-            <li class="ready"><span>✓</span><div><strong>Текстовый чат</strong><small>История задач в локальной SQLite</small></div></li>
-            <li class="ready"><span>✓</span><div><strong>Локальная модель</strong><small>OpenAI API на localhost</small></div></li>
-            <li class="ready"><span>✓</span><div><strong>Корпоративная модель</strong><small>Только HTTPS, ключ в памяти</small></div></li>
-            <li class="partial"><span>◐</span><div><strong>Голосовой контур</strong><small>PCM capture/playback, VAD и barge-in готовы в исходниках; runtime подключается отдельно</small></div></li>
-            <li class="ready"><span>✓</span><div><strong>eXpress (Синапс)</strong><small>Готовый транскрипт или быстрый ZIP с provenance; BotX API не подключён</small></div></li>
-            <li class="partial"><span>◐</span><div><strong>Корпоративные системы</strong><small>Предпросмотр, подтверждение и защита от дублей готовы; API требуют стендов</small></div></li>
-          </ul>
+          <div class="preflight-card">
+            <div class="pilot-metrics-heading">
+              <strong>Проверка устройства</strong>
+              <span id="pilotPreflightOverall">Проверяю</span>
+            </div>
+            <p id="pilotPreflightSummary">Определяю готовность этой установки к пилоту.</p>
+            <button class="secondary-button" id="pilotPreflightButton" type="button">Проверить снова</button>
+            <ul class="readiness-list" id="pilotPreflightList" aria-live="polite"></ul>
+          </div>
           <div class="architecture-note">
             <strong>Граница для Java core</strong>
             <p>Electron использует Java-политику и журнал действий только для служебных метаданных; рабочее содержимое остаётся в локальном backend.</p>

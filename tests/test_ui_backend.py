@@ -133,6 +133,38 @@ def test_stop_session_cancels_current_answer(tmp_path) -> None:
     assert turn.is_set()
 
 
+def test_macos_pilot_preflight_uses_loaded_runtime_without_work_content(
+    tmp_path,
+) -> None:
+    backend = UIBackend(
+        Config.defaults(),
+        EventEmitter(),
+        AssistantStore(tmp_path / "assistant.sqlite3"),
+        core_policy=FakeCorePolicy(),
+    )
+    backend.assistant.stt.model = object()
+    backend._local_chat.model = object()
+    backend._local_chat.tokenizer = object()
+
+    class ReadyTTS:
+        model = object()
+
+    backend.assistant.tts = ReadyTTS()
+    backend._microphone_verified = True
+
+    result = backend._build_pilot_preflight()
+    statuses = {check["id"]: check["status"] for check in result["checks"]}
+
+    assert result["overall"] == "limited"
+    assert result["content_transmitted"] is False
+    assert statuses["storage"] == "pass"
+    assert statuses["llm"] == "pass"
+    assert statuses["stt"] == "pass"
+    assert statuses["tts"] == "pass"
+    assert statuses["microphone"] == "pass"
+    assert statuses["voice_slo"] == "unverified"
+
+
 def test_push_to_talk_dictation_returns_system_text_without_llm(
     monkeypatch, capsys, tmp_path
 ) -> None:

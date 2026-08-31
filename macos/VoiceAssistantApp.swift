@@ -828,6 +828,14 @@ struct EntityRecord: Identifiable, Hashable {
     }
 }
 
+struct PilotPreflightCheckRecord: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let status: String
+    let detail: String
+    let action: String
+}
+
 struct ArtifactVersionRecord: Identifiable, Hashable {
     let id: String
     let artifactID: String
@@ -990,6 +998,8 @@ final class BackendController: ObservableObject {
     @Published var currentMeetingID: String?
     @Published var settings: [String: String] = [:]
     @Published private(set) var pilotMetrics: [String: Any] = [:]
+    @Published private(set) var pilotPreflightOverall = "limited"
+    @Published private(set) var pilotPreflightChecks: [PilotPreflightCheckRecord] = []
     @Published var dashboard = DashboardStats()
     @Published var modelName = "Локальная MLX"
     @Published var composerDraft = ""
@@ -1031,6 +1041,25 @@ final class BackendController: ObservableObject {
     var llmMode: String { settings["llm_mode"] ?? "local" }
 
     var pilotMetricSampleCount: Int { int(pilotMetrics["sample_count"]) }
+
+    var pilotPreflightOverallLabel: String {
+        switch pilotPreflightOverall {
+        case "ready": return "Готово"
+        case "blocked": return "Не готово"
+        default: return "Ограниченно"
+        }
+    }
+
+    var pilotPreflightSummaryLabel: String {
+        let blockers = pilotPreflightChecks.filter { $0.status == "block" }.count
+        let attention = pilotPreflightChecks.filter {
+            $0.status == "warn" || $0.status == "unverified"
+        }.count
+        guard !pilotPreflightChecks.isEmpty else {
+            return "Определяю готовность этой установки к пилоту."
+        }
+        return "Проверок: \(pilotPreflightChecks.count) · блокирует: \(blockers) · требует внимания: \(attention)"
+    }
 
     var pilotMetricsSummaryLabel: String {
         let metrics = pilotMetrics["metrics"] as? [String: Any] ?? [:]
@@ -1108,6 +1137,19 @@ final class BackendController: ObservableObject {
         let route = isAutoLLMActive ? "Авто → \(shortRoute)" : shortRoute
         return javaCorePolicyConfigured && !javaCorePolicyReady
             ? "\(route) · резерв" : route
+    }
+    var compactActivityLabel: String {
+        switch state {
+        case .starting, .loading: return "Загрузка моделей"
+        case .ready: return "Готов к работе"
+        case .calibrating: return "Калибровка"
+        case .listening: return "Слушаю"
+        case .transcribing: return "Распознаю"
+        case .thinking: return "Думаю"
+        case .speaking: return "Отвечаю голосом"
+        case .stopping: return "Останавливаю"
+        case .error: return "Нужна настройка"
+        }
     }
     var javaCorePolicyStatusLabel: String {
         if javaCorePolicyReady { return "Java 21 · активна" }
@@ -2141,6 +2183,24 @@ final class BackendController: ObservableObject {
         }
     }
 
+    func runPilotPreflight() {
+        send(["command": "pilot_preflight"])
+    }
+
+    private func applyPilotPreflight(_ report: [String: Any]) {
+        let overall = string(report, "overall")
+        pilotPreflightOverall = overall.isEmpty ? "limited" : overall
+        pilotPreflightChecks = rows(report, "checks").map { check in
+            PilotPreflightCheckRecord(
+                id: string(check, "id"),
+                title: string(check, "title"),
+                status: string(check, "status"),
+                detail: string(check, "detail"),
+                action: string(check, "action")
+            )
+        }
+    }
+
     func shutdown() {
         globalPushToTalkMonitor?.stop()
         globalPushToTalkMonitor = nil
@@ -2414,6 +2474,10 @@ final class BackendController: ObservableObject {
             statusText = "Ответ озвучен"
         case "pilot_metrics_exported":
             statusText = "Обезличенная сводка качества сохранена"
+        case "pilot_preflight":
+            if let report = event["result"] as? [String: Any] {
+                applyPilotPreflight(report)
+            }
         case "task_context":
             activeSources = rows(event, "sources").map(sourceRecord)
         case "routing_fallback":
@@ -2857,6 +2921,9 @@ final class BackendController: ObservableObject {
         audit = rows(data, "audit").map { EntityRecord(id: string($0, "id"), title: string($0, "action"), subtitle: string($0, "status"), detail: string($0, "detail"), status: string($0, "created_at")) }
         settings = (data["settings"] as? [String: String]) ?? [:]
         pilotMetrics = (data["pilot_metrics"] as? [String: Any]) ?? [:]
+        if let report = data["pilot_preflight"] as? [String: Any] {
+            applyPilotPreflight(report)
+        }
         if let platform = data["platform"] as? [String: Any],
            let javaPolicy = platform["java_core_policy"] as? [String: Any] {
             javaCorePolicyConfigured = bool(javaPolicy["configured"])
@@ -3205,7 +3272,7 @@ struct AssistantWorkspaceView: View {
     var body: some View {
         HStack(spacing: 0) {
             sidebar; Divider().opacity(0.4)
-            VStack(spacing: 0) { topBar; Divider().opacity(0.35); sectionContent.frame(maxWidth: .infinity, maxHeight: .infinity); Divider().opacity(0.35); UniversalComposer(controller: controller, showQuickActions: section != .tasks) }
+            VStack(spacing: 0) { topBar; Divider().opacity(0.35); sectionContent.frame(maxWidth: .infinity, maxHeight: .infinity); Divider().opacity(0.35); UniversalComposer(controller: controller, showQuickActions: false) }
         }
         .frame(width: 1060, height: 720)
         .background(RnDTheme.canvas)
@@ -5391,6 +5458,7 @@ struct SettingsView: View {
     @State private var autoRemotePolicyDraft = "local_only"
     @State private var draftEndpointHasStoredKey = false
     @State private var didLoadLLMDrafts = false
+    @State private var preflightDetailsExpanded = false
     @FocusState private var focusedLLMField: LLMSettingsField?
 
     private enum LLMSettingsField: Hashable { case baseURL, model, apiKey }
@@ -5440,7 +5508,7 @@ struct SettingsView: View {
                     .accessibilityHint("Запрашивает Универсальный доступ, Мониторинг ввода и разрешение резервной вставки")
                 }
             }
-            Section("Качество пилота") {
+            Section("Качество и готовность пилота") {
                 LabeledContent(
                     "Измерений за 14 дней",
                     value: "\(controller.pilotMetricSampleCount)"
@@ -5452,6 +5520,38 @@ struct SettingsView: View {
                     controller.exportPilotMetrics()
                 }
                 Text("Экспорт содержит только агрегаты задержек и сигнала — без запросов, транскриптов, ответов и идентификаторов сессий.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Divider()
+                LabeledContent("Итог", value: controller.pilotPreflightOverallLabel)
+                Text(controller.pilotPreflightSummaryLabel)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(RnDTheme.ink)
+                Button("Проверить снова") {
+                    controller.runPilotPreflight()
+                }
+                DisclosureGroup("Подробности проверки", isExpanded: $preflightDetailsExpanded) {
+                    ForEach(controller.pilotPreflightChecks) { check in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: preflightIcon(check.status))
+                                .foregroundStyle(preflightColor(check.status))
+                                .frame(width: 18)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(check.title).font(.callout.weight(.semibold))
+                                Text(check.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if !check.action.isEmpty {
+                                    Text(check.action)
+                                        .font(.caption)
+                                        .foregroundStyle(preflightColor(check.status))
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                Text("Проверка передаёт только технические статусы и агрегаты — без запросов, транскриптов и ответов.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -5578,11 +5678,16 @@ struct SettingsView: View {
                 }
 
                 HStack {
-                    Button(llmModeDraft != "local" ? "Сохранить и применить" : "Применить локальную MLX") {
-                        applyLLMConfiguration()
+                    if llmModeDraft != "local" || controller.llmMode != "local" {
+                        Button(llmModeDraft != "local" ? "Сохранить и применить" : "Применить локальную MLX") {
+                            applyLLMConfiguration()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!controller.canChangeLLMConfiguration)
+                    } else {
+                        Label("Локальная модель активна", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(RnDTheme.blue)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!controller.canChangeLLMConfiguration)
 
                     if controller.isExternalLLMActive || controller.isAutoLLMActive || llmModeDraft != "local" {
                         Button("Вернуться к локальной MLX") {
@@ -5595,7 +5700,7 @@ struct SettingsView: View {
 
                     Spacer()
 
-                    if draftEndpointHasStoredKey {
+                    if shouldShowRemoteFields && draftEndpointHasStoredKey {
                         Button("Удалить ключ этого адреса", role: .destructive) {
                             apiKeyDraft = ""
                             controller.deleteExternalLLMAPIKey(baseURL: externalBaseURLDraft)
@@ -5714,6 +5819,24 @@ struct SettingsView: View {
 
     private func refreshDraftEndpointKeyStatus() {
         draftEndpointHasStoredKey = controller.hasStoredExternalLLMKey(baseURL: externalBaseURLDraft)
+    }
+
+    private func preflightIcon(_ status: String) -> String {
+        switch status {
+        case "pass": return "checkmark.circle.fill"
+        case "warn": return "exclamationmark.triangle.fill"
+        case "block": return "xmark.octagon.fill"
+        default: return "questionmark.circle.fill"
+        }
+    }
+
+    private func preflightColor(_ status: String) -> Color {
+        switch status {
+        case "pass": return RnDTheme.blue
+        case "warn": return .orange
+        case "block": return RnDTheme.red
+        default: return RnDTheme.steel
+        }
     }
 }
 
@@ -6491,7 +6614,7 @@ struct CompactAssistantView: View {
                 .frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: 0) {
                 Text("RnD Workbench").font(.system(size: 13, weight: .bold, design: .rounded)).lineLimit(1).minimumScaleFactor(0.78)
-                Text(controller.statusText).font(.caption2).foregroundStyle(controller.state.color).lineLimit(1)
+                Text(controller.compactActivityLabel).font(.caption2).foregroundStyle(controller.state.color).lineLimit(1)
                 Label(
                     controller.compactLLMRouteStatusLabel,
                     systemImage: controller.actualLLMRouteIcon
@@ -6620,22 +6743,8 @@ struct CompactAssistantView: View {
                 .onChange(of: controller.messages.last?.text) { _, _ in
                     if let id = controller.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
                 }
-                .onChange(of: controller.quickActions.count) { _, _ in
-                    DispatchQueue.main.async {
-                        if let id = controller.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
-                    }
-                }
             }
             .frame(height: compactConversationHeight)
-            if !controller.quickActions.isEmpty {
-                QuickActionsBar(
-                    actions: controller.quickActions,
-                    pendingID: controller.quickActionPendingID,
-                    compact: true,
-                    isCompleted: controller.isQuickActionCompleted,
-                    onAction: controller.performQuickAction
-                )
-            }
             PendingAttachmentsBar(controller: controller, compact: true)
             ComposerSuggestionsView(controller: controller, compact: true)
             HStack(spacing: 8) {
@@ -6679,7 +6788,6 @@ struct CompactAssistantView: View {
     private var compactConversationHeight: CGFloat {
         if controller.speechErrorMessage != nil { return 34 }
         if !controller.composerSuggestions.isEmpty || !controller.pendingAttachments.isEmpty { return 48 }
-        if !controller.quickActions.isEmpty { return 72 }
         return 104
     }
 
