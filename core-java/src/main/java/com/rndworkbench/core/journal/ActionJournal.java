@@ -6,6 +6,8 @@ import java.sql.SQLException;
 public interface ActionJournal extends AutoCloseable {
     ActionClaimResult claim(ActionClaimRequest request) throws SQLException;
 
+    ActionInspectionResult inspect(ActionInspectionRequest request) throws SQLException;
+
     ActionCompletionResult complete(ActionCompletionRequest request) throws SQLException;
 
     @Override

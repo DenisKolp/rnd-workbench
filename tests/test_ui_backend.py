@@ -12,6 +12,7 @@ from voice_assistant.audio import (
     UtteranceDetector,
 )
 from voice_assistant.config import AudioConfig, Config
+from voice_assistant.integrations import IntegrationIntent, IntegrationRequest
 from voice_assistant.java_core import JavaRouteDecision
 from voice_assistant.store import AssistantStore
 from voice_assistant.text import concise_speech_text
@@ -72,6 +73,45 @@ def test_unknown_ui_command_is_reported(capsys, tmp_path) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["type"] == "error"
     assert "does-not-exist" in payload["message"]
+
+
+def test_macos_approval_command_uses_integration_hub_and_never_claims_false_success(
+    capsys,
+    tmp_path,
+) -> None:  # noqa: ANN001
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    backend = UIBackend(
+        Config.defaults(),
+        EventEmitter(),
+        store,
+        core_policy=FakeCorePolicy(),
+    )
+    task = store.create_task(store.default_workspace_id(), "Обновить страницу")
+    approval = backend.integration_hub.stage(
+        IntegrationRequest(
+            "confluence",
+            "page.update",
+            IntegrationIntent.WRITE,
+            {"title": "Итоги встречи"},
+        ),
+        task_id=task["id"],
+    )
+
+    backend._resolve_approval(approval["id"], "approved")
+
+    row = store._rows(
+        "SELECT status, result FROM approvals WHERE id=?",
+        (approval["id"],),
+    )[0]
+    assert row["status"] == "error"
+    assert "не подключена" in row["result"]
+    assert store.get_task(task["id"])["status"] == "needs_user"
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert any(event["type"] == "approval_execution_failed" for event in events)
+    assert not any(
+        event["type"] == "approval_resolved" and event.get("status") == "succeeded"
+        for event in events
+    )
 
 
 def test_microphone_listen_can_be_cancelled_without_audio() -> None:
@@ -579,6 +619,19 @@ def test_macos_snapshot_exposes_visible_java_policy_fallback(capsys, tmp_path) -
             "ready": False,
             "protocol_version": None,
             "policy": "python_fallback",
+        },
+        "java_action_journal": {
+            "configured": True,
+            "ready": False,
+            "production_fail_closed": True,
+            "content_transmitted": False,
+            "recovery": {
+                "journal_ready": False,
+                "inspected": 0,
+                "resolved": 0,
+                "requires_attention": 0,
+                "skipped": 0,
+            },
         },
     }
     assert core.closed is True

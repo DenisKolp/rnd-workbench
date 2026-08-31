@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rndworkbench.core.ipc.contract.ActionClaimPayload;
 import com.rndworkbench.core.ipc.contract.ActionCompletionPayload;
+import com.rndworkbench.core.ipc.contract.ActionInspectionPayload;
 import com.rndworkbench.core.ipc.contract.EmptyPayload;
 import com.rndworkbench.core.ipc.contract.HealthStatusPayload;
 import com.rndworkbench.core.ipc.contract.IpcRequestEnvelope;
@@ -14,6 +15,7 @@ import com.rndworkbench.core.ipc.contract.RouteDecisionResultPayload;
 import com.rndworkbench.core.journal.ActionClaimRequest;
 import com.rndworkbench.core.journal.ActionCompletionRequest;
 import com.rndworkbench.core.journal.ActionExecutionResult;
+import com.rndworkbench.core.journal.ActionInspectionRequest;
 import com.rndworkbench.core.journal.ActionJournal;
 import com.rndworkbench.core.meeting.SynapseMeetingPackagePolicy;
 import com.rndworkbench.core.routing.AvailableRoutes;
@@ -132,6 +134,7 @@ public final class IpcProcessor {
             case "route.decide" -> route(request);
             case "meeting.package.plan" -> meetingPackagePlan(request);
             case "action.claim" -> claim(request);
+            case "action.inspect" -> inspect(request);
             case "action.complete" -> complete(request);
             default -> error(
                     request.correlationId(),
@@ -203,6 +206,22 @@ public final class IpcProcessor {
                 "meeting.package.plan.result",
                 request.correlationId(),
                 meetingPackagePolicy.plan(payload)
+        );
+    }
+
+    private IpcResponseEnvelope inspect(IpcRequestEnvelope request)
+            throws JsonProcessingException, SQLException {
+        ActionInspectionPayload payload = mapper.treeToValue(
+                request.payload(),
+                ActionInspectionPayload.class
+        );
+        return success(
+                "action.inspect.result",
+                request.correlationId(),
+                journal.inspect(new ActionInspectionRequest(
+                        payload.idempotencyKey(),
+                        payload.requestFingerprint()
+                ))
         );
     }
 

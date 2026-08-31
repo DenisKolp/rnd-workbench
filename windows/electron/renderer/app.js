@@ -846,6 +846,46 @@ function renderTasks() {
   byId("taskTitle").textContent = String(current?.title || "Новая задача");
 }
 
+function renderApprovals() {
+  const container = byId("approvalList");
+  if (!container) return;
+  container.replaceChildren();
+  const approvals = Array.isArray(state.snapshot.approvals)
+    ? state.snapshot.approvals.filter((item) => ["pending", "error"].includes(String(item.status || "")))
+    : [];
+  byId("approvalCount").textContent = String(approvals.length);
+  if (!approvals.length) {
+    container.append(textNode("span", "approval-empty", "Нет действий, требующих внимания"));
+    return;
+  }
+  for (const approval of approvals.slice(0, 6)) {
+    const status = String(approval.status || "pending");
+    const item = textNode("div", `approval-item${status === "error" ? " error" : ""}`, "");
+    item.append(textNode("div", "approval-item-title", String(approval.title || approval.action_type || "Внешнее действие")));
+    item.append(textNode(
+      "div",
+      "approval-item-meta",
+      status === "pending" ? `Риск: ${String(approval.risk || "medium")}` : "Нужна проверка результата",
+    ));
+    if (status === "pending") {
+      const actions = textNode("div", "approval-actions", "");
+      const reject = textNode("button", "secondary-button", "Отклонить");
+      reject.type = "button";
+      reject.addEventListener("click", () => sendCommand("resolve_approval", { id: approval.id, status: "rejected" }));
+      const approve = textNode("button", "send-button", "Подтвердить");
+      approve.type = "button";
+      approve.addEventListener("click", () => {
+        if (window.confirm(`Выполнить действие «${String(approval.title || approval.action_type)}»?`)) {
+          sendCommand("resolve_approval", { id: approval.id, status: "approved" });
+        }
+      });
+      actions.append(reject, approve);
+      item.append(actions);
+    }
+    container.append(item);
+  }
+}
+
 function renderRuntime() {
   const ready = Boolean(state.runtime.ready);
   const provider = state.runtime.provider_type;
@@ -859,11 +899,19 @@ function renderRuntime() {
       : state.runtime.base_url ? "модель требует настройки" : "модель не настроена";
   byId("sidebarStatus").textContent = route === "local" ? "Локальный контур" : route === "corporate" ? "Корпоративный контур" : "Нужна настройка";
   const javaPolicy = state.platform.java_core_policy || {};
-  routeLabel.title = javaPolicy.ready
+  const routePolicyTitle = javaPolicy.ready
     ? "Маршрутизация проверяется Java 21 core"
     : javaPolicy.configured
       ? "Java 21 core временно недоступен; действует резервная Python-политика"
       : "Java 21 core не настроен в development-режиме";
+  const actionJournal = state.platform.java_action_journal || {};
+  const recoveryAttention = Number(actionJournal.recovery?.requires_attention || 0);
+  const actionJournalTitle = recoveryAttention > 0
+    ? `Внешние действия требуют сверки: ${recoveryAttention}`
+    : actionJournal.ready
+      ? "Java 21 защищает внешние действия от повторного выполнения"
+      : "Защитный журнал недоступен; внешние действия блокируются";
+  routeLabel.title = `${routePolicyTitle}\n${actionJournalTitle}`;
   if (javaPolicy.configured && !javaPolicy.ready && !state.javaFallbackNotified) {
     state.javaFallbackNotified = true;
     toast("Java core недоступен — действует резервная встроенная политика");
@@ -921,6 +969,7 @@ function renderVoiceCapability() {
 function renderSnapshot() {
   renderMessages();
   renderTasks();
+  renderApprovals();
   renderRuntime();
   renderVoiceCapability();
   byId("metricsLabel").textContent = state.metric;
@@ -1024,6 +1073,15 @@ function handleBackendEvent(event) {
         break;
       case "routing_blocked":
         toast(String(event.message || "Передача контекста заблокирована политикой данных"));
+        break;
+      case "approval_resolved":
+        toast(event.status === "rejected" ? "Действие отклонено" : "Действие завершено");
+        break;
+      case "approval_execution_pending":
+        toast(String(event.result || "Действие ожидает сверки"));
+        break;
+      case "approval_execution_failed":
+        toast(String(event.result || "Внешнее действие не выполнено"));
         break;
       case "synapse_package_imported": {
         setMeetingImporting(false);

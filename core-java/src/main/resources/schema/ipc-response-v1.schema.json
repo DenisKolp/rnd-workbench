@@ -8,6 +8,7 @@
     { "$ref": "#/$defs/routeResponse" },
     { "$ref": "#/$defs/meetingPackagePlanResponse" },
     { "$ref": "#/$defs/claimResponse" },
+    { "$ref": "#/$defs/inspectResponse" },
     { "$ref": "#/$defs/completeResponse" }
   ],
   "$defs": {
@@ -275,6 +276,50 @@
               "required": ["disposition"],
               "properties": {
                 "disposition": { "enum": ["IN_PROGRESS", "CONFLICT"] }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "inspectResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "ok", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "action.inspect.result" },
+        "correlationId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "ok": { "const": true },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["disposition", "claimToken"],
+              "properties": {
+                "disposition": { "const": "IN_PROGRESS" },
+                "claimToken": { "type": "string", "format": "uuid" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["disposition", "result"],
+              "properties": {
+                "disposition": { "const": "COMPLETED" },
+                "result": { "$ref": "#/$defs/executionResult" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["disposition"],
+              "properties": {
+                "disposition": { "enum": ["NOT_FOUND", "CONFLICT"] }
               }
             }
           ]

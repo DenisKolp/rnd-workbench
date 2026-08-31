@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import base64
 from collections.abc import Callable, Iterator
+import hashlib
 import http.client
 import ipaddress
 import importlib
@@ -42,6 +43,7 @@ from .java_core import (
     JavaCoreProtocolError,
     JavaCoreUnavailable,
 )
+from .integrations import SafeIntegrationHub
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
 from .store import AssistantStore
 from .text import SentenceChunker, SpeechExcerptBuilder, normalize_for_omnivoice_speech
@@ -831,6 +833,17 @@ class WindowsPilotBackend:
         self._chat: OpenAIChatClient | None = None
         self._voice_runtime = voice_runtime or PortableWindowsVoiceRuntime.from_environment()
         self._core_policy = core_policy or JavaCorePolicyClient.from_environment(data_path)
+        self.integration_hub = SafeIntegrationHub(
+            self.store,
+            action_journal=self._core_policy,
+        )
+        self._action_recovery: dict[str, int | bool] = {
+            "journal_ready": False,
+            "inspected": 0,
+            "resolved": 0,
+            "requires_attention": 0,
+            "skipped": 0,
+        }
         self._active_policy_metadata: dict[str, Any] = {
             "policy_engine": "python_fallback",
             "java_core_ready": False,
@@ -863,6 +876,14 @@ class WindowsPilotBackend:
             configured=bool(java_diagnostics.get("configured")),
             ready=java_ready,
             protocol_version=java_diagnostics.get("protocol_version"),
+        )
+        self._action_recovery = self.integration_hub.reconcile_interrupted()
+        self.emitter.emit(
+            "diagnostic",
+            component="java_core",
+            check="action_reconciliation",
+            measured=True,
+            **self._action_recovery,
         )
         self.emitter.emit(
             "state",
@@ -932,6 +953,8 @@ class WindowsPilotBackend:
             )
         elif name == "core_policy_probe":
             self.probe_core_policy()
+        elif name == "core_action_journal_probe":
+            self.probe_core_action_journal()
         elif name == "voice_self_check":
             self.emit_voice_capability()
             self.emitter.emit(
@@ -974,6 +997,11 @@ class WindowsPilotBackend:
             self.current_workspace_id = str(task["workspace_id"])
             self.current_task_id = str(task["id"])
             self.emit_snapshot()
+        elif name == "resolve_approval":
+            self.resolve_approval(
+                str(command.get("id") or command.get("approval_id") or ""),
+                str(command.get("status") or ""),
+            )
         elif name == "delete_task":
             task_id = str(command.get("task_id") or command.get("id") or "")
             if not task_id:
@@ -996,6 +1024,92 @@ class WindowsPilotBackend:
             self._core_policy.close()
         else:
             self.emitter.emit("error", message=f"Неизвестная команда: {name}")
+
+    def resolve_approval(self, approval_id: str, status: str) -> None:
+        if not approval_id:
+            raise ValueError("Не указано согласование")
+        rows = self.store._rows("SELECT * FROM approvals WHERE id=?", (approval_id,))
+        if not rows:
+            raise KeyError(approval_id)
+        approval = rows[0]
+        if status == "rejected":
+            resolved = self.store.resolve_approval(
+                approval_id,
+                "rejected",
+                actor="local-user",
+                origin="windows_approval_center",
+            )
+            self.store.cancel_approval_dependents(
+                approval_id,
+                actor="system",
+                origin="workflow",
+            )
+            self._sync_task_after_approvals(resolved.get("task_id"))
+            self.emitter.emit("approval_resolved", id=approval_id, status="rejected")
+            self.emit_snapshot()
+            return
+        if status != "approved":
+            raise ValueError("Статус должен быть approved или rejected")
+        payload = json.loads(approval["payload"] or "{}")
+        if not isinstance(payload, dict) or not {
+            "integration",
+            "operation",
+            "parameters",
+        }.issubset(payload):
+            raise ValueError("Сохранённые параметры интеграции повреждены")
+        self.store.resolve_approval(
+            approval_id,
+            "approved",
+            actor="local-user",
+            origin="windows_approval_center",
+        )
+        result = self.integration_hub.execute_approved(approval_id, actor="system")
+        updated = self.store._rows(
+            "SELECT * FROM approvals WHERE id=?",
+            (approval_id,),
+        )[0]
+        self._sync_task_after_approvals(updated.get("task_id"))
+        if result.ok:
+            self.emitter.emit(
+                "approval_resolved",
+                id=approval_id,
+                status=updated["status"],
+                result=result.message,
+                production=result.production,
+            )
+        elif result.status == "in_progress":
+            self.emitter.emit(
+                "approval_execution_pending",
+                id=approval_id,
+                status=updated["status"],
+                result=result.message,
+            )
+        else:
+            self.emitter.emit(
+                "approval_execution_failed",
+                id=approval_id,
+                status="error",
+                result=result.message,
+            )
+            self.emitter.emit("error", message=result.message)
+        self.emit_snapshot()
+
+    def _sync_task_after_approvals(self, task_id: str | None) -> None:
+        if not task_id:
+            return
+        rows = self.store._rows(
+            "SELECT status FROM approvals WHERE task_id=?",
+            (task_id,),
+        )
+        statuses = {str(item["status"]) for item in rows}
+        self.store.update_task(
+            task_id,
+            status=(
+                "needs_user"
+                if statuses & {"pending", "approved", "executing", "error"}
+                else "done"
+            ),
+        )
 
     def import_synapse_package(self, command: dict[str, Any]) -> None:
         """Import a local meeting export without blocking the JSONL loop."""
@@ -2240,6 +2354,77 @@ class WindowsPilotBackend:
             reason=reason,
         )
 
+    def probe_core_action_journal(self) -> None:
+        """Exercise the packaged durable journal with content-free metadata."""
+
+        key = "probe.windows.java-action.v1"
+        fingerprint = hashlib.sha256(key.encode("ascii")).hexdigest()
+        initial_state = "UNAVAILABLE"
+        claim_state = "UNAVAILABLE"
+        completion_state = "UNAVAILABLE"
+        replay_state = "UNAVAILABLE"
+        result_code: str | None = None
+        ready = False
+        try:
+            if not (self._core_policy.ready or self._core_policy.start()):
+                raise JavaCoreUnavailable("Java core is unavailable")
+            inspected = self._core_policy.inspect_action(
+                idempotency_key=key,
+                request_fingerprint=fingerprint,
+            )
+            initial_state = inspected.disposition
+            claimed = self._core_policy.claim_action(
+                idempotency_key=key,
+                request_fingerprint=fingerprint,
+            )
+            claim_state = claimed.disposition
+            if claimed.disposition == "CLAIMED" and claimed.claim_token:
+                completed = self._core_policy.complete_action(
+                    idempotency_key=key,
+                    request_fingerprint=fingerprint,
+                    claim_token=claimed.claim_token,
+                    outcome="SUCCESS",
+                    result_code="PROBE.SUCCESS",
+                )
+                completion_state = completed.disposition
+            elif claimed.disposition == "REPLAY":
+                completion_state = "ALREADY_COMPLETED"
+            replayed = self._core_policy.claim_action(
+                idempotency_key=key,
+                request_fingerprint=fingerprint,
+            )
+            replay_state = replayed.disposition
+            result_code = replayed.result.result_code if replayed.result else None
+            ready = (
+                claim_state in {"CLAIMED", "REPLAY"}
+                and completion_state in {"RECORDED", "REPLAY", "ALREADY_COMPLETED"}
+                and replay_state == "REPLAY"
+                and result_code == "PROBE.SUCCESS"
+            )
+        except (
+            AttributeError,
+            JavaCoreUnavailable,
+            JavaCoreProtocolError,
+            ValueError,
+        ):
+            ready = False
+        diagnostics = self._core_policy.diagnostics()
+        self.emitter.emit(
+            "diagnostic",
+            component="java_core",
+            check="action_journal",
+            measured=True,
+            configured=bool(diagnostics.get("configured")),
+            ready=ready,
+            protocol_version=diagnostics.get("protocol_version"),
+            initial_state=initial_state,
+            claim=claim_state,
+            completion=completion_state,
+            replay=replay_state,
+            result_code=result_code,
+            content_transmitted=False,
+        )
+
     def _verify_java_route(self, turn: TurnContext) -> None:
         policy = turn.policy
         if policy is None:
@@ -2361,6 +2546,10 @@ class WindowsPilotBackend:
             "full_window_available": True,
             "full_feature_parity": False,
             "java_core_policy": self._core_policy.diagnostics(),
+            "java_action_journal": {
+                **self.integration_hub.action_journal_diagnostics(),
+                "recovery": dict(self._action_recovery),
+            },
         }
         self.emitter.emit("snapshot", data=snapshot)
 

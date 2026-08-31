@@ -94,6 +94,14 @@
               <button class="secondary-button" id="synapseImportButton" type="button">Пакет с контекстом</button>
             </div>
           </div>
+          <div class="approval-card">
+            <div class="approval-heading">
+              <strong>Согласования</strong>
+              <span id="approvalCount">0</span>
+            </div>
+            <p>Внешние изменения выполняются только после подтверждения и надёжной резервировки в Java 21.</p>
+            <div id="approvalList" class="approval-list"></div>
+          </div>
           <ul class="readiness-list">
             <li class="ready"><span>✓</span><div><strong>Electron UI</strong><small>Один процесс окна, compact ↔ full</small></div></li>
             <li class="ready"><span>✓</span><div><strong>Текстовый чат</strong><small>История задач в локальной SQLite</small></div></li>
@@ -101,11 +109,11 @@
             <li class="ready"><span>✓</span><div><strong>Корпоративная модель</strong><small>Только HTTPS, ключ в памяти</small></div></li>
             <li class="partial"><span>◐</span><div><strong>Голосовой контур</strong><small>PCM capture/playback, VAD и barge-in готовы в исходниках; runtime подключается отдельно</small></div></li>
             <li class="ready"><span>✓</span><div><strong>eXpress (Синапс)</strong><small>Готовый транскрипт или пакет с provenance; BotX API не подключён</small></div></li>
-            <li class="planned"><span>→</span><div><strong>Корпоративные системы</strong><small>Коннекторы требуют API и стендов</small></div></li>
+            <li class="partial"><span>◐</span><div><strong>Корпоративные системы</strong><small>Предпросмотр, подтверждение и защита от дублей готовы; API требуют стендов</small></div></li>
           </ul>
           <div class="architecture-note">
             <strong>Граница для Java core</strong>
-            <p>Electron общается с core по JSONL. Будущий сервис может заменить Python-мост без смены UI.</p>
+            <p>Electron использует Java-политику и журнал действий только для служебных метаданных; рабочее содержимое остаётся в локальном backend.</p>
           </div>
         </aside>
       </div>

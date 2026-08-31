@@ -95,6 +95,28 @@ public final class SqliteActionJournal implements ActionJournal {
     }
 
     @Override
+    public ActionInspectionResult inspect(ActionInspectionRequest request)
+            throws SQLException {
+        Objects.requireNonNull(request, "request");
+        try (Connection connection = openConnection()) {
+            StoredEntry entry = find(connection, request.idempotencyKey());
+            if (entry == null) {
+                return ActionInspectionResult.notFound();
+            }
+            if (!entry.requestFingerprint().equals(request.requestFingerprint())) {
+                return ActionInspectionResult.conflict();
+            }
+            if (CLAIMED.equals(entry.state())) {
+                return ActionInspectionResult.inProgress(entry.claimToken());
+            }
+            if (COMPLETED.equals(entry.state()) && entry.result() != null) {
+                return ActionInspectionResult.completed(entry.result());
+            }
+            throw new SQLException("Journal contains an invalid action state");
+        }
+    }
+
+    @Override
     public ActionCompletionResult complete(ActionCompletionRequest request)
             throws SQLException {
         Objects.requireNonNull(request, "request");
@@ -225,6 +247,7 @@ public final class SqliteActionJournal implements ActionJournal {
             throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT request_fingerprint,
+                       claim_token,
                        state,
                        outcome,
                        result_code,
@@ -250,6 +273,7 @@ public final class SqliteActionJournal implements ActionJournal {
                 }
                 return new StoredEntry(
                         resultSet.getString("request_fingerprint"),
+                        resultSet.getString("claim_token"),
                         state,
                         result
                 );
@@ -267,6 +291,7 @@ public final class SqliteActionJournal implements ActionJournal {
 
     private record StoredEntry(
             String requestFingerprint,
+            String claimToken,
             String state,
             ActionExecutionResult result
     ) {

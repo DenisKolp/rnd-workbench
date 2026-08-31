@@ -27,12 +27,13 @@ Faster-Whisper weights и loopback OmniVoice-Fast server Python-мост чес�
 | Рабочие пространства и задачи | Частично | SQLite-история и задачи работают; полный macOS-набор экранов не перенесён |
 | Политика данных | Готово для чата | Local допускает локальный контекст; corporate ограничен классификацией и ручным контекстом |
 | Java 21 route gate | Проверено локально и в CI | Перед LLM Python передаёт в companion только классификацию, предпочтение и доступность маршрутов; несовпадение блокирует запрос, сбой включает видимый Python fallback |
+| Java 21 action journal | Проверено локально и в CI | Согласованные production-действия получают metadata-only claim; повтор и конфликт блокируются, прерванный результат сверяется без повторного вызова |
 | Голосовой ввод, STT | Готово в исходниках | Electron WebAudio → mono PCM16/16 кГц, adaptive VAD/pre-roll и Faster-Whisper; нужен Windows hardware QA |
 | Глобальная диктовка | Готово в исходниках | Удержание F8 записывает речь, отпускание вставляет текст через UI Automation/SendInput; secure fields отклоняются, нужен Windows hardware QA |
 | TTS, единый голос, перебивание | Готово в исходниках | Один короткий OmniVoice-Fast запрос с фиксированными profile/seed, PCM stream, limiter, 12-мс fade и barge-in; акустические SLO не измерены |
 | Импорт встреч eXpress | Готово в исходниках | Локальный Faster-Whisper обрабатывает выбранный аудиофайл; также доступны готовый транскрипт и пакет с provenance. Нужен Windows hardware QA |
 | Jira / Kaiten / Confluence / почта / календарь | Не подключено | Нужны корпоративные API, OAuth/SSO и тестовые стенды |
-| Voice-ready portable QA artifact | Проверено в CI | Frozen backend импортирует Faster-Whisper, CTranslate2 и Tokenizers, запускает bundled Java route gate; artifact хранится семь дней |
+| Voice-ready portable QA artifact | Проверено в CI | Frozen backend импортирует Faster-Whisper, CTranslate2 и Tokenizers, запускает bundled Java route gate и action journal probe; artifact хранится семь дней |
 | Подписанный установщик | Не проверено | Windows CI создаёт unsigned portable artifact; веса Whisper, OmniVoice server, подпись и hardware QA не входят в эту проверку |
 
 Статусы «в исходниках» означают, что код и автоматические контрактные тесты
@@ -48,7 +49,7 @@ Electron main process — единственный BrowserWindow
         │ JSON Lines через stdin/stdout
 Windows core service
         ├─ Python bridge: chat + STT/OmniVoice adapters
-        └─ Java 21 companion: metadata-only route gate через IPC 1.0
+        └─ Java 21 companion: route gate + action journal через IPC 1.0
 ```
 
 Renderer не получает Node.js API и не открывает внешние страницы. В main
@@ -64,8 +65,10 @@ JSONL остаётся целевой границей. Переменная
 prompt, транскрипты, документы, ответы модели и ключи остаются в Python/native
 runtime. При несовпадении политик LLM не вызывается, а при недоступности Java
 интерфейс явно показывает резервную встроенную Python-политику. Persistent
-action journal уже входит в Java core, но внешние connector actions пока его не
-используют.
+action journal подключён к общему integration hub: production write получает
+claim до вызова, результат фиксируется после него, а перезапуск выполняет только
+сверку. Реальные корпоративные API-адаптеры пока не подключены, поэтому UI не
+выдаёт подготовленный запрос за выполненное действие.
 
 ## Запуск из репозитория на Windows
 

@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
+import hashlib
 import json
 import re
 import threading
 import weakref
 from typing import Any, Mapping, Protocol
 
+from .java_core import (
+    ActionJournalRuntime,
+    JavaActionExecution,
+    JavaCoreProtocolError,
+    JavaCoreUnavailable,
+)
 from .store import (
     CLASSIFICATION_RANK,
     AssistantStore,
@@ -142,6 +149,16 @@ class IntegrationAdapter(Protocol):
     ) -> IntegrationResult:
         ...
 
+    def reconcile(
+        self,
+        operation: str,
+        payload: Mapping[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> IntegrationResult | None:
+        """Return a definitive prior result, or ``None`` when still unknown."""
+        ...
+
 
 class IntegrationUnavailable(RuntimeError):
     pass
@@ -155,9 +172,24 @@ class SafeIntegrationHub:
     store or in the adapter's process environment.
     """
 
-    def __init__(self, store: AssistantStore) -> None:
+    def __init__(
+        self,
+        store: AssistantStore,
+        *,
+        action_journal: ActionJournalRuntime | None = None,
+    ) -> None:
         self.store = store
+        self.action_journal = action_journal
         self._adapters: dict[str, IntegrationAdapter] = {}
+
+    def action_journal_diagnostics(self) -> dict[str, Any]:
+        journal = self.action_journal
+        return {
+            "configured": bool(journal and getattr(journal, "configured", False)),
+            "ready": bool(journal and getattr(journal, "ready", False)),
+            "production_fail_closed": True,
+            "content_transmitted": False,
+        }
 
     def register(self, adapter: IntegrationAdapter) -> None:
         system = _identifier(adapter.system, "Система интеграции")
@@ -331,6 +363,64 @@ class SafeIntegrationHub:
                     production=False,
                 )
             raise ValueError("Состояние согласования уже изменилось")
+
+        fingerprint = _action_request_fingerprint(executing, payload)
+        journal = self.action_journal
+        journal_ready = _action_journal_ready(journal)
+        claim_token: str | None = None
+        if journal_ready and journal is not None:
+            try:
+                claim = journal.claim_action(
+                    idempotency_key=str(executing["idempotency_key"]),
+                    request_fingerprint=fingerprint,
+                )
+            except (
+                AttributeError,
+                JavaCoreUnavailable,
+                JavaCoreProtocolError,
+                ValueError,
+            ):
+                claim = None
+                journal_ready = False
+            if claim is not None:
+                self._audit_java_state(
+                    executing,
+                    action="approval.java_claim",
+                    status=claim.disposition.casefold(),
+                    result_code=f"java_claim_{claim.disposition.casefold()}",
+                    actor=actor,
+                )
+                if claim.disposition == "REPLAY" and claim.result is not None:
+                    return self._apply_java_result(
+                        executing,
+                        claim.result,
+                        actor=actor,
+                        origin="java_action_replay",
+                    )
+                if claim.disposition != "CLAIMED" or not claim.claim_token:
+                    message = (
+                        "Java core уже видит действие в выполнении; автоматический "
+                        "повтор заблокирован и требуется сверка с внешней системой"
+                        if claim.disposition == "IN_PROGRESS"
+                        else "Java core обнаружил конфликт идентичности действия; выполнение заблокировано"
+                    )
+                    return self._fail_local_execution(
+                        executing,
+                        message,
+                        result_code=f"java_claim_{claim.disposition.casefold()}",
+                        actor=actor,
+                        production=bool(adapter.production),
+                    )
+                claim_token = claim.claim_token
+
+        if adapter.production and (not journal_ready or claim_token is None):
+            return self._fail_local_execution(
+                executing,
+                "Защитный журнал Java core недоступен; корпоративное действие не выполнено",
+                result_code="java_action_journal_unavailable",
+                actor=actor,
+                production=True,
+            )
         try:
             result = adapter.execute(
                 operation,
@@ -339,39 +429,368 @@ class SafeIntegrationHub:
             )
         except Exception as exc:
             message = f"{system}: исполнитель вернул ошибку {type(exc).__name__}"
-            self.store.complete_approval_execution(
-                approval_id,
-                success=False,
-                result_code="connector_error",
-                result=message,
-                actor=actor,
-                origin="integration_hub",
-            )
-            return IntegrationResult(
+            connector_error = IntegrationResult(
                 status="error",
                 message=message,
                 production=bool(adapter.production),
             )
-        result = _normalize_execution_result(result, adapter=adapter)
-        if not result.ok:
-            self.store.complete_approval_execution(
-                approval_id,
-                success=False,
-                result_code=f"connector_{result.status}",
-                result=result.message,
+            return self._finish_claimed_execution(
+                executing,
+                connector_error,
+                claim_token=claim_token,
+                fingerprint=fingerprint,
+                result_code="CONNECTOR.ERROR",
                 actor=actor,
-                origin="integration_hub",
             )
-            return result
+        result = _normalize_execution_result(result, adapter=adapter)
+        return self._finish_claimed_execution(
+            executing,
+            result,
+            claim_token=claim_token,
+            fingerprint=fingerprint,
+            result_code=(
+                "PRODUCTION.SUCCESS"
+                if result.ok and result.production
+                else "SIMULATED.SUCCESS"
+                if result.ok
+                else f"CONNECTOR.{_safe_result_code(result.status)}"
+            ),
+            actor=actor,
+        )
+
+    def _finish_claimed_execution(
+        self,
+        approval: Mapping[str, Any],
+        result: IntegrationResult,
+        *,
+        claim_token: str | None,
+        fingerprint: str,
+        result_code: str,
+        actor: str,
+    ) -> IntegrationResult:
+        journal = self.action_journal
+        if claim_token is not None and journal is not None:
+            try:
+                completion = journal.complete_action(
+                    idempotency_key=str(approval["idempotency_key"]),
+                    request_fingerprint=fingerprint,
+                    claim_token=claim_token,
+                    outcome="SUCCESS" if result.ok else "FAILURE",
+                    result_code=result_code,
+                    external_reference=_safe_external_reference(result.external_id),
+                )
+                completion_confirmed = completion.disposition in {"RECORDED", "REPLAY"}
+            except (
+                AttributeError,
+                JavaCoreUnavailable,
+                JavaCoreProtocolError,
+                ValueError,
+            ):
+                completion = None
+                completion_confirmed = False
+            self._audit_java_state(
+                approval,
+                action="approval.java_complete",
+                status=(
+                    completion.disposition.casefold()
+                    if completion is not None
+                    else "unconfirmed"
+                ),
+                result_code=(
+                    f"java_complete_{completion.disposition.casefold()}"
+                    if completion is not None
+                    else "java_completion_unconfirmed"
+                ),
+                actor=actor,
+            )
+            if not completion_confirmed:
+                return self._fail_local_execution(
+                    approval,
+                    "Внешний исполнитель ответил, но Java core не подтвердил запись результата; повтор заблокирован до сверки",
+                    result_code="java_completion_unconfirmed",
+                    actor=actor,
+                    production=bool(result.production),
+                )
+
         self.store.complete_approval_execution(
-            approval_id,
-            success=True,
-            result_code=("production_success" if result.production else "simulated"),
+            str(approval["id"]),
+            success=result.ok,
+            result_code=(
+                "production_success"
+                if result.ok and result.production
+                else "simulated"
+                if result.ok
+                else f"connector_{result.status}"
+            ),
             result=result.message,
             actor=actor,
             origin="integration_hub",
         )
         return result
+
+    def _fail_local_execution(
+        self,
+        approval: Mapping[str, Any],
+        message: str,
+        *,
+        result_code: str,
+        actor: str,
+        production: bool,
+    ) -> IntegrationResult:
+        self.store.complete_approval_execution(
+            str(approval["id"]),
+            success=False,
+            result_code=result_code,
+            result=message,
+            actor=actor,
+            origin="integration_hub",
+        )
+        return IntegrationResult(
+            status="error",
+            message=message,
+            production=production,
+        )
+
+    def _apply_java_result(
+        self,
+        approval: Mapping[str, Any],
+        result: JavaActionExecution,
+        *,
+        actor: str,
+        origin: str,
+        recovery: bool = False,
+    ) -> IntegrationResult:
+        success = result.outcome == "SUCCESS"
+        simulated = success and result.result_code == "SIMULATED.SUCCESS"
+        local_result_code = (
+            "simulated"
+            if simulated
+            else "production_success"
+            if success
+            else result.result_code.casefold()
+        )
+        external_suffix = (
+            f" · ссылка {result.external_reference}"
+            if result.external_reference
+            else ""
+        )
+        message = (
+            "Java core подтвердил ранее выполненное действие"
+            if success
+            else "Java core подтвердил ранее завершившуюся ошибку"
+        ) + external_suffix
+        if recovery:
+            self.store.reconcile_approval_execution(
+                str(approval["id"]),
+                success=success,
+                result_code=local_result_code,
+                result=message,
+                actor=actor,
+                origin=origin,
+            )
+        else:
+            self.store.complete_approval_execution(
+                str(approval["id"]),
+                success=success,
+                result_code=local_result_code,
+                result=message,
+                actor=actor,
+                origin=origin,
+            )
+        return IntegrationResult(
+            status="simulated" if simulated else "succeeded" if success else "error",
+            message=message,
+            external_id=result.external_reference or "",
+            production=bool(success and not simulated),
+        )
+
+    def _audit_java_state(
+        self,
+        approval: Mapping[str, Any],
+        *,
+        action: str,
+        status: str,
+        result_code: str,
+        actor: str,
+    ) -> None:
+        self.store.audit(
+            approval.get("task_id"),
+            action,
+            str(approval["id"]),
+            status,
+            self.store._approval_audit_detail(
+                action_type=str(approval["action_type"]),
+                risk=str(approval["risk"]),
+                confirmation_policy=str(approval["confirmation_policy"]),
+                workflow_id=str(approval["workflow_id"]),
+                step_index=int(approval["step_index"]),
+                revision=int(approval["revision"]),
+                result_code=result_code,
+            ),
+            actor=actor,
+            origin="java_core",
+        )
+
+    def reconcile_interrupted(self, *, actor: str = "system") -> dict[str, int | bool]:
+        """Reconcile durable claims without ever retrying a side effect.
+
+        A connector may only report a result it can prove by its own
+        idempotency lookup. ``None`` keeps the approval in a visible error state.
+        """
+
+        summary: dict[str, int | bool] = {
+            "journal_ready": False,
+            "inspected": 0,
+            "resolved": 0,
+            "requires_attention": 0,
+            "skipped": 0,
+        }
+        journal = self.action_journal
+        if not _action_journal_ready(journal):
+            return summary
+        summary["journal_ready"] = True
+        rows = self.store._rows("SELECT * FROM approvals WHERE status='error'")
+        for approval in rows:
+            history = self.store.approval_history(str(approval["id"]))
+            recoverable = any(
+                item["action"] == "approval.recover"
+                or (
+                    item["action"] in {
+                        "approval.java_claim",
+                        "approval.java_complete",
+                    }
+                    and item["status"] in {"in_progress", "unconfirmed"}
+                )
+                for item in history
+            )
+            if not recoverable:
+                summary["skipped"] = int(summary["skipped"]) + 1
+                continue
+            try:
+                payload = json.loads(approval["payload"] or "{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("invalid payload")
+                system = _identifier(payload.get("integration", ""), "Система интеграции")
+                operation = _identifier(
+                    payload.get("operation", ""),
+                    "Операция интеграции",
+                    allow_dot=True,
+                )
+                parameters = payload.get("parameters", {})
+                if not isinstance(parameters, dict):
+                    raise ValueError("invalid parameters")
+                _reject_secrets(parameters)
+                adapter = self._adapters.get(system)
+                if adapter is None:
+                    summary["requires_attention"] = int(summary["requires_attention"]) + 1
+                    continue
+                fingerprint = _action_request_fingerprint(approval, payload)
+                inspection = journal.inspect_action(
+                    idempotency_key=str(approval["idempotency_key"]),
+                    request_fingerprint=fingerprint,
+                )
+            except (
+                JavaCoreUnavailable,
+                JavaCoreProtocolError,
+                AttributeError,
+                KeyError,
+                TypeError,
+                ValueError,
+                json.JSONDecodeError,
+            ):
+                summary["requires_attention"] = int(summary["requires_attention"]) + 1
+                continue
+            summary["inspected"] = int(summary["inspected"]) + 1
+            self._audit_java_state(
+                approval,
+                action="approval.java_inspect",
+                status=inspection.disposition.casefold(),
+                result_code=f"java_inspect_{inspection.disposition.casefold()}",
+                actor=actor,
+            )
+            if inspection.disposition == "COMPLETED" and inspection.result is not None:
+                self._apply_java_result(
+                    approval,
+                    inspection.result,
+                    actor=actor,
+                    origin="java_action_recovery",
+                    recovery=True,
+                )
+                self._sync_reconciled_task(approval.get("task_id"))
+                summary["resolved"] = int(summary["resolved"]) + 1
+                continue
+            if inspection.disposition != "IN_PROGRESS" or not inspection.claim_token:
+                summary["requires_attention"] = int(summary["requires_attention"]) + 1
+                continue
+            try:
+                observed = adapter.reconcile(
+                    operation,
+                    parameters,
+                    idempotency_key=str(approval["idempotency_key"]),
+                )
+            except Exception:
+                observed = None
+            if observed is None:
+                summary["requires_attention"] = int(summary["requires_attention"]) + 1
+                continue
+            observed = _normalize_execution_result(observed, adapter=adapter)
+            result_code = (
+                "PRODUCTION.SUCCESS"
+                if observed.ok and observed.production
+                else "SIMULATED.SUCCESS"
+                if observed.ok
+                else f"CONNECTOR.{_safe_result_code(observed.status)}"
+            )
+            try:
+                completion = journal.complete_action(
+                    idempotency_key=str(approval["idempotency_key"]),
+                    request_fingerprint=fingerprint,
+                    claim_token=inspection.claim_token,
+                    outcome="SUCCESS" if observed.ok else "FAILURE",
+                    result_code=result_code,
+                    external_reference=_safe_external_reference(observed.external_id),
+                )
+            except (
+                AttributeError,
+                JavaCoreUnavailable,
+                JavaCoreProtocolError,
+                ValueError,
+            ):
+                completion = None
+            if completion is None or completion.disposition not in {"RECORDED", "REPLAY"}:
+                summary["requires_attention"] = int(summary["requires_attention"]) + 1
+                continue
+            java_result = completion.result or JavaActionExecution(
+                outcome="SUCCESS" if observed.ok else "FAILURE",
+                result_code=result_code,
+                external_reference=_safe_external_reference(observed.external_id),
+                completed_at=utc_now(),
+            )
+            self._apply_java_result(
+                approval,
+                java_result,
+                actor=actor,
+                origin="java_action_recovery",
+                recovery=True,
+            )
+            self._sync_reconciled_task(approval.get("task_id"))
+            summary["resolved"] = int(summary["resolved"]) + 1
+        return summary
+
+    def _sync_reconciled_task(self, task_id: Any) -> None:
+        if not task_id:
+            return
+        rows = self.store._rows(
+            "SELECT status FROM approvals WHERE task_id=?",
+            (str(task_id),),
+        )
+        statuses = {str(item["status"]) for item in rows}
+        target = (
+            "needs_user"
+            if statuses & {"pending", "approved", "executing", "error"}
+            else "done"
+        )
+        self.store.update_task(str(task_id), status=target)
 
     def _claim_approval_execution(
         self,
@@ -452,7 +871,9 @@ class SafeIntegrationHub:
         rows = self.store._rows(
             """
             SELECT detail FROM audit_log
-            WHERE target=? AND action='approval.execute' AND status='succeeded'
+            WHERE target=?
+              AND action IN ('approval.execute', 'approval.reconcile')
+              AND status='succeeded'
             ORDER BY rowid DESC LIMIT 1
             """,
             (str(approval["id"]),),
@@ -560,6 +981,16 @@ class InMemoryIntegrationAdapter:
         self._results[idempotency_key] = result
         return result
 
+    def reconcile(
+        self,
+        operation: str,
+        payload: Mapping[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> IntegrationResult | None:
+        del operation, payload
+        return self._results.get(idempotency_key)
+
 
 def _identifier(value: Any, label: str, *, allow_dot: bool = False) -> str:
     normalized = str(value).casefold().strip()
@@ -577,6 +1008,58 @@ def _execution_lock(store: AssistantStore, idempotency_key: str) -> Any:
             lock = threading.RLock()
             _EXECUTION_LOCKS[scope] = lock
         return lock
+
+
+def _action_journal_ready(journal: ActionJournalRuntime | None) -> bool:
+    """Start a compatible journal without letting an old bridge break the UI."""
+
+    if journal is None:
+        return False
+    if bool(getattr(journal, "ready", False)):
+        return True
+    try:
+        return bool(journal.start())
+    except (
+        AttributeError,
+        JavaCoreUnavailable,
+        JavaCoreProtocolError,
+        ValueError,
+    ):
+        return False
+
+
+def _action_request_fingerprint(
+    approval: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> str:
+    identity = {
+        "action_type": str(approval["action_type"]),
+        "classification": normalize_classification(payload.get("classification")),
+        "integration": str(payload.get("integration") or ""),
+        "intent": str(payload.get("intent") or ""),
+        "operation": str(payload.get("operation") or ""),
+        "parameters": payload.get("parameters", {}),
+        "revision": int(approval["revision"]),
+    }
+    canonical = json.dumps(
+        identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _safe_result_code(value: str) -> str:
+    normalized = re.sub(r"[^A-Z0-9._:-]+", ".", value.upper()).strip(".")
+    return (normalized or "ERROR")[:128]
+
+
+def _safe_external_reference(value: str) -> str | None:
+    candidate = value.strip()
+    if candidate and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}", candidate):
+        return candidate
+    return None
 
 
 def _normalize_execution_result(

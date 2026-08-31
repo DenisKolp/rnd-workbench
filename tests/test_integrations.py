@@ -15,13 +15,20 @@ from voice_assistant.integrations import (
     SafeIntegrationHub,
     action_policy,
 )
+from voice_assistant.java_core import (
+    JavaActionClaim,
+    JavaActionCompletion,
+    JavaActionExecution,
+    JavaActionInspection,
+    JavaCoreUnavailable,
+)
 from voice_assistant.store import AssistantStore
 
 
 def make_hub(tmp_path, system: str = "jira"):  # noqa: ANN001, ANN201
     store = AssistantStore(tmp_path / "assistant.sqlite3")
     adapter = InMemoryIntegrationAdapter(system)
-    hub = SafeIntegrationHub(store)
+    hub = SafeIntegrationHub(store, action_journal=FakeActionJournal())
     hub.register(adapter)
     return store, hub, adapter
 
@@ -62,6 +69,93 @@ class BlockingIntegrationAdapter(InMemoryIntegrationAdapter):
         finally:
             with self._guard:
                 self._active -= 1
+
+
+class FakeActionJournal:
+    configured = True
+
+    def __init__(self) -> None:
+        self.ready = True
+        self.fail_completion = False
+        self.claims: list[dict[str, str]] = []
+        self.completions: list[dict[str, str | None]] = []
+        self._entries: dict[str, tuple[str, str, JavaActionExecution | None]] = {}
+
+    def start(self) -> bool:
+        return self.ready
+
+    def claim_action(
+        self,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> JavaActionClaim:
+        self.claims.append(
+            {
+                "idempotency_key": idempotency_key,
+                "request_fingerprint": request_fingerprint,
+            }
+        )
+        current = self._entries.get(idempotency_key)
+        if current is not None:
+            fingerprint, token, result = current
+            if fingerprint != request_fingerprint:
+                return JavaActionClaim("CONFLICT", None, None)
+            if result is not None:
+                return JavaActionClaim("REPLAY", None, result)
+            return JavaActionClaim("IN_PROGRESS", None, None)
+        token = "00000000-0000-4000-8000-000000000001"
+        self._entries[idempotency_key] = (request_fingerprint, token, None)
+        return JavaActionClaim("CLAIMED", token, None)
+
+    def inspect_action(
+        self,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> JavaActionInspection:
+        current = self._entries.get(idempotency_key)
+        if current is None:
+            return JavaActionInspection("NOT_FOUND", None, None)
+        fingerprint, token, result = current
+        if fingerprint != request_fingerprint:
+            return JavaActionInspection("CONFLICT", None, None)
+        if result is not None:
+            return JavaActionInspection("COMPLETED", None, result)
+        return JavaActionInspection("IN_PROGRESS", token, None)
+
+    def complete_action(
+        self,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+        claim_token: str,
+        outcome: str,
+        result_code: str,
+        external_reference: str | None = None,
+        completed_at: str | None = None,
+    ) -> JavaActionCompletion:
+        if self.fail_completion:
+            raise JavaCoreUnavailable("simulated completion outage")
+        current = self._entries[idempotency_key]
+        assert current[:2] == (request_fingerprint, claim_token)
+        result = JavaActionExecution(
+            outcome=outcome,
+            result_code=result_code,
+            external_reference=external_reference,
+            completed_at=completed_at or "2026-08-31T16:00:00Z",
+        )
+        self.completions.append(
+            {
+                "idempotency_key": idempotency_key,
+                "request_fingerprint": request_fingerprint,
+                "outcome": outcome,
+                "result_code": result_code,
+                "external_reference": external_reference,
+            }
+        )
+        self._entries[idempotency_key] = (request_fingerprint, claim_token, result)
+        return JavaActionCompletion("RECORDED", result)
 
 
 @pytest.mark.parametrize(
@@ -226,7 +320,7 @@ def test_connector_cannot_mark_simulated_result_as_production(tmp_path) -> None:
             )
 
     store = AssistantStore(tmp_path / "assistant.sqlite3")
-    hub = SafeIntegrationHub(store)
+    hub = SafeIntegrationHub(store, action_journal=FakeActionJournal())
     hub.register(MisreportingAdapter("confluence"))
     approval = hub.stage(
         IntegrationRequest(
@@ -244,6 +338,194 @@ def test_connector_cannot_mark_simulated_result_as_production(tmp_path) -> None:
 
     assert (first.status, first.production) == ("simulated", False)
     assert (replay.status, replay.production) == ("simulated", False)
+
+
+def test_production_connector_fails_closed_without_java_action_journal(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    class ProductionAdapter(InMemoryIntegrationAdapter):
+        production = True
+
+        def execute(  # noqa: ANN201
+            self,
+            operation: str,
+            payload,  # noqa: ANN001
+            *,
+            idempotency_key: str,
+        ):
+            self.executions.append({"unexpected": True})
+            return IntegrationResult(
+                status="succeeded",
+                message="Не должно выполниться",
+                production=True,
+            )
+
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    adapter = ProductionAdapter("jira")
+    hub = SafeIntegrationHub(store)
+    hub.register(adapter)
+    approval = hub.stage(
+        IntegrationRequest(
+            "jira",
+            "issue.create",
+            IntegrationIntent.WRITE,
+            {"summary": "Пилот"},
+        ),
+        task_id=None,
+    )
+    store.resolve_approval(approval["id"], "approved")
+
+    result = hub.execute_approved(approval["id"])
+
+    assert result.status == "error"
+    assert "Java core" in result.message
+    assert adapter.executions == []
+    row = store._rows("SELECT * FROM approvals WHERE id=?", (approval["id"],))[0]
+    assert row["status"] == "error"
+
+
+def test_java_claim_and_completion_wrap_production_connector_without_content(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    class ProductionAdapter(InMemoryIntegrationAdapter):
+        production = True
+
+        def execute(  # noqa: ANN201
+            self,
+            operation: str,
+            payload,  # noqa: ANN001
+            *,
+            idempotency_key: str,
+        ):
+            self.executions.append(
+                {
+                    "operation": operation,
+                    "payload": dict(payload),
+                    "idempotency_key": idempotency_key,
+                }
+            )
+            result = IntegrationResult(
+                status="succeeded",
+                message="Задача создана",
+                external_id="RND-42",
+                production=True,
+            )
+            self._results[idempotency_key] = result
+            return result
+
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    journal = FakeActionJournal()
+    adapter = ProductionAdapter("jira")
+    hub = SafeIntegrationHub(store, action_journal=journal)
+    hub.register(adapter)
+    marker = "КОНФИДЕНЦИАЛЬНЫЙ_ТЕКСТ_4821"
+    approval = hub.stage(
+        IntegrationRequest(
+            "jira",
+            "issue.create",
+            IntegrationIntent.WRITE,
+            {"summary": marker},
+            classification="confidential",
+        ),
+        task_id=None,
+    )
+    store.resolve_approval(approval["id"], "approved")
+
+    first = hub.execute_approved(approval["id"])
+    replay = hub.execute_approved(approval["id"])
+
+    assert (first.status, first.production, first.external_id) == (
+        "succeeded",
+        True,
+        "RND-42",
+    )
+    assert replay.status == "succeeded"
+    assert len(adapter.executions) == 1
+    assert len(journal.claims) == 1
+    assert len(journal.completions) == 1
+    safe_boundary = json.dumps(
+        {"claims": journal.claims, "completions": journal.completions},
+        ensure_ascii=False,
+    )
+    assert marker not in safe_boundary
+    assert journal.completions[0]["external_reference"] == "RND-42"
+
+
+def test_interrupted_java_claim_reconciles_without_reexecuting_connector(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    journal = FakeActionJournal()
+    adapter = InMemoryIntegrationAdapter("kaiten")
+    hub = SafeIntegrationHub(store, action_journal=journal)
+    hub.register(adapter)
+    task = store.create_task(store.default_workspace_id(), "Создать карточку")
+    approval = hub.stage(
+        IntegrationRequest(
+            "kaiten",
+            "card.create",
+            IntegrationIntent.WRITE,
+            {"title": "Разобрать встречу"},
+        ),
+        task_id=task["id"],
+    )
+    store.resolve_approval(approval["id"], "approved")
+    journal.fail_completion = True
+
+    uncertain = hub.execute_approved(approval["id"])
+
+    assert uncertain.status == "error"
+    assert len(adapter.executions) == 1
+    assert "сверки" in uncertain.message
+    journal.fail_completion = False
+
+    recovery = hub.reconcile_interrupted()
+
+    assert recovery["resolved"] == 1
+    assert recovery["requires_attention"] == 0
+    assert len(adapter.executions) == 1
+    row = store._rows("SELECT * FROM approvals WHERE id=?", (approval["id"],))[0]
+    assert row["status"] == "succeeded"
+    assert store.get_task(task["id"])["status"] == "done"
+    assert store.approval_history(approval["id"])[-1]["action"] == "approval.reconcile"
+    replay = hub.execute_approved(approval["id"])
+    assert (replay.status, replay.production) == ("simulated", False)
+
+
+def test_legacy_java_bridge_without_action_methods_fails_closed_for_production(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    class RouteOnlyBridge:
+        configured = True
+        ready = True
+
+        @staticmethod
+        def start() -> bool:
+            return True
+
+    class ProductionAdapter(InMemoryIntegrationAdapter):
+        production = True
+
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    adapter = ProductionAdapter("jira")
+    hub = SafeIntegrationHub(store, action_journal=RouteOnlyBridge())
+    hub.register(adapter)
+    approval = hub.stage(
+        IntegrationRequest(
+            "jira",
+            "issue.create",
+            IntegrationIntent.WRITE,
+            {"summary": "Не выполнять без журнала"},
+        ),
+        task_id=None,
+    )
+    store.resolve_approval(approval["id"], "approved")
+
+    result = hub.execute_approved(approval["id"])
+
+    assert result.status == "error"
+    assert "Java core" in result.message
+    assert adapter.executions == []
 
 
 def test_missing_connector_stages_preview_but_never_claims_external_success(

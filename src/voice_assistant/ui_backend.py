@@ -33,6 +33,7 @@ from .java_core import (
     JavaCoreProtocolError,
     JavaCoreUnavailable,
 )
+from .integrations import SafeIntegrationHub
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
 from .store import AssistantStore
 from .synapse import SynapseImportInProgressError, SynapseRepairRequiredError
@@ -70,6 +71,7 @@ class UIBackend:
         emitter: EventEmitter,
         store: AssistantStore | None = None,
         core_policy: CorePolicyRuntime | None = None,
+        integration_hub: SafeIntegrationHub | None = None,
     ) -> None:
         self.config = config
         self.emitter = emitter
@@ -83,6 +85,19 @@ class UIBackend:
             if core_policy is not None
             else JavaCorePolicyClient.from_environment(self.store.path)
         )
+        self.integration_hub = integration_hub or SafeIntegrationHub(
+            self.store,
+            action_journal=self._core_policy,
+        )
+        if self.integration_hub.action_journal is None:
+            self.integration_hub.action_journal = self._core_policy
+        self._action_recovery: dict[str, int | bool] = {
+            "journal_ready": False,
+            "inspected": 0,
+            "resolved": 0,
+            "requires_attention": 0,
+            "skipped": 0,
+        }
         initial = self.store.snapshot()
         self.current_workspace_id = initial["current_workspace_id"]
         self.current_task_id = initial["current_task_id"]
@@ -122,6 +137,14 @@ class UIBackend:
             configured=bool(java_diagnostics.get("configured")),
             ready=java_ready,
             protocol_version=java_diagnostics.get("protocol_version"),
+        )
+        self._action_recovery = self.integration_hub.reconcile_interrupted()
+        self.emitter.emit(
+            "diagnostic",
+            component="java_core",
+            check="action_reconciliation",
+            measured=True,
+            **self._action_recovery,
         )
         self.emitter.emit(
             "state",
@@ -3114,6 +3137,10 @@ class UIBackend:
         snapshot["platform"] = {
             "name": "macos",
             "java_core_policy": self._core_policy.diagnostics(),
+            "java_action_journal": {
+                **self.integration_hub.action_journal_diagnostics(),
+                "recovery": dict(self._action_recovery),
+            },
         }
         snapshot["model"] = (
             f"{runtime['model']} · "
@@ -3176,37 +3203,81 @@ class UIBackend:
             origin="approval_center",
         )
         capability = str(payload.get("capability") or approved["action_type"])
-        result_code = "executor_not_connected"
-        result = (
-            f"{capability} не подключён. Действие не выполнено; "
-            "измените план или подключите исполнитель и повторите."
-        )
-        try:
-            self.store.begin_approval_execution(
+        is_integration_action = {
+            "integration",
+            "operation",
+            "parameters",
+        }.issubset(payload)
+        if is_integration_action:
+            integration_result = self.integration_hub.execute_approved(
                 approval_id,
+                actor="system",
+            )
+            updated = self.store._rows(
+                "SELECT * FROM approvals WHERE id=?",
+                (approval_id,),
+            )[0]
+            if integration_result.ok:
+                if updated.get("task_id"):
+                    self.store.add_task_event(
+                        updated["task_id"],
+                        "approval_succeeded",
+                        "Внешнее действие выполнено",
+                        f"Шаг {updated['step_index']} · {updated['action_type']}",
+                    )
+                self._sync_task_after_approvals(updated.get("task_id"))
+                self.emitter.emit(
+                    "approval_resolved",
+                    id=approval_id,
+                    status=updated["status"],
+                    result=integration_result.message,
+                    production=integration_result.production,
+                )
+                self.emit_snapshot()
+                return
+            if integration_result.status == "in_progress":
+                self._sync_task_after_approvals(updated.get("task_id"))
+                self.emitter.emit(
+                    "approval_execution_pending",
+                    id=approval_id,
+                    status=updated["status"],
+                    result=integration_result.message,
+                )
+                self.emit_snapshot()
+                return
+            failed = updated
+            result = integration_result.message
+        else:
+            result_code = "executor_not_connected"
+            result = (
+                f"{capability} не подключён. Действие не выполнено; "
+                "измените план или подключите исполнитель и повторите."
+            )
+            try:
+                self.store.begin_approval_execution(
+                    approval_id,
+                    actor="system",
+                    origin="local_action_router",
+                )
+                if payload.get("connected") is True:
+                    # A payload flag is not an executor. Until a real callable
+                    # is registered, it must not become external success.
+                    result_code = "executor_unavailable"
+                    result = (
+                        f"Для {capability} не зарегистрирован исполнитель. "
+                        "Действие не выполнено."
+                    )
+            except ValueError as exc:
+                result_code = "workflow_predecessor_blocked"
+                result = str(exc)
+            failed = self.store.complete_approval_execution(
+                approval_id,
+                success=False,
+                result_code=result_code,
+                result=result,
                 actor="system",
                 origin="local_action_router",
             )
-            if payload.get("connected") is True:
-                # A payload flag is not an executor.  Until a real callable is
-                # registered, treating it as success would create a false
-                # corporate side effect.
-                result_code = "executor_unavailable"
-                result = (
-                    f"Для {capability} не зарегистрирован исполнитель. "
-                    "Действие не выполнено."
-                )
-        except ValueError as exc:
-            result_code = "workflow_predecessor_blocked"
-            result = str(exc)
-        failed = self.store.complete_approval_execution(
-            approval_id,
-            success=False,
-            result_code=result_code,
-            result=result,
-            actor="system",
-            origin="local_action_router",
-        )
         if failed.get("task_id"):
             task = self.store.get_task(failed["task_id"])
             self.store.add_task_event(

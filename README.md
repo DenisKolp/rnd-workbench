@@ -82,8 +82,12 @@ TTS остаются на устройстве; текстовый inference м�
   Python ↔ Java golden contracts на Linux, macOS и Windows. При недоступности
   companion интерфейс явно показывает резервную Python-политику; несовпадение
   решений блокирует запрос. На macOS внешний маршрут дополнительно допускается
-  только для данных уровня `public` после явного выбора; Java claim/result для
-  реальных внешних действий пока не подключён.
+  только для данных уровня `public` после явного выбора. Перед вызовом любого
+  подключённого production-коннектора общий integration hub получает Java claim,
+  а после вызова фиксирует metadata-only результат. Незавершённое действие при
+  старте только сверяется через `action.inspect` и connector idempotency lookup;
+  слепого автоматического повтора нет. Если Java-журнал недоступен, внешнее
+  изменение блокируется.
 
 Точное решение и границы миграции описаны в
 [`docs/ADR-0001-CROSS_PLATFORM_JAVA_CORE.md`](docs/ADR-0001-CROSS_PLATFORM_JAVA_CORE.md),
@@ -329,9 +333,9 @@ TTS выводится блоками по 30 мс, поэтому подтве�
 uv run pytest
 ```
 
-Полный Python/UI-набор содержит **378 тестов** и проходит локально; в него входят
-22 macOS и 56 Windows contract-тестов, а также Python ↔ Java golden contracts.
-Отдельно проходят 42 JUnit-теста Java 21 core.
+Полный Python/UI-набор содержит **388 тестов** и проходит локально; в него входят
+23 macOS и 59 Windows contract-тестов, а также Python ↔ Java golden contracts.
+Отдельно проходят 44 JUnit-теста Java 21 core.
 Платформенные оговорки зафиксированы в `CURRENT_STATE.md`. Electron
 `node --check`, endpoint-canonicalization self-tests и строгая рекурсивная
 проверка подписи `.app` входят в релизный чек-лист. Пользовательская live-база и

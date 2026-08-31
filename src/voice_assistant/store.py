@@ -4046,6 +4046,59 @@ class AssistantStore:
         )
         return self._rows("SELECT * FROM approvals WHERE id=?", (approval_id,))[0]
 
+    def reconcile_approval_execution(
+        self,
+        approval_id: str,
+        *,
+        success: bool,
+        result_code: str,
+        result: str,
+        actor: str = "system",
+        origin: str = "reconciliation",
+    ) -> dict[str, Any]:
+        """Persist a connector-proven result after an interrupted execution.
+
+        This path never calls the connector and never retries the external
+        effect. The caller must first prove the outcome through the durable Java
+        journal and the connector's idempotency lookup.
+        """
+
+        rows = self._rows("SELECT * FROM approvals WHERE id=?", (approval_id,))
+        if not rows:
+            raise KeyError(approval_id)
+        current = rows[0]
+        if current["status"] not in {"error", "executing"}:
+            raise ValueError("Сверить можно только прерванное внешнее действие")
+        target_status = "succeeded" if success else "error"
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE approvals SET status=?, result=?, updated_at=?
+                WHERE id=? AND status IN ('error', 'executing')
+                """,
+                (target_status, result, utc_now(), approval_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("Состояние согласования уже изменилось")
+        self.audit(
+            current["task_id"],
+            "approval.reconcile",
+            approval_id,
+            target_status,
+            self._approval_audit_detail(
+                action_type=current["action_type"],
+                risk=current["risk"],
+                confirmation_policy=current["confirmation_policy"],
+                workflow_id=current["workflow_id"],
+                step_index=int(current["step_index"]),
+                revision=int(current["revision"]),
+                result_code=result_code,
+            ),
+            actor=actor,
+            origin=origin,
+        )
+        return self._rows("SELECT * FROM approvals WHERE id=?", (approval_id,))[0]
+
     def update_approval_payload(
         self,
         approval_id: str,

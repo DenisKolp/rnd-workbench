@@ -7,6 +7,7 @@
     { "$ref": "#/$defs/routeRequest" },
     { "$ref": "#/$defs/meetingPackagePlanRequest" },
     { "$ref": "#/$defs/claimRequest" },
+    { "$ref": "#/$defs/inspectRequest" },
     { "$ref": "#/$defs/completeRequest" }
   ],
   "$defs": {
@@ -209,6 +210,25 @@
       "properties": {
         "version": { "const": "1.0" },
         "type": { "const": "action.claim" },
+        "correlationId": { "$ref": "#/$defs/correlationId" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["idempotencyKey", "requestFingerprint"],
+          "properties": {
+            "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" },
+            "requestFingerprint": { "$ref": "#/$defs/fingerprint" }
+          }
+        }
+      }
+    },
+    "inspectRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "action.inspect" },
         "correlationId": { "$ref": "#/$defs/correlationId" },
         "payload": {
           "type": "object",

@@ -162,6 +162,7 @@ jobs:
           $output = @(
             '{"command":"voice_dependency_probe"}'
             '{"command":"core_policy_probe"}'
+            '{"command":"core_action_journal_probe"}'
             '{"command":"quit"}'
           ) | & windows/dist/backend/rnd-workbench-backend.exe --data $dataPath
           if ($LASTEXITCODE -ne 0) { throw "Packaged backend smoke-test failed." }
@@ -180,6 +181,14 @@ jobs:
           Write-Host ("Java core policy probe: " + ($coreProbe | ConvertTo-Json -Compress))
           if ($null -eq $coreProbe -or -not $coreProbe.ready -or $coreProbe.route -ne "LOCAL") {
             throw "Packaged Java core route policy is unavailable."
+          }
+          $actionProbe = $output |
+            ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.type -eq "diagnostic" -and $_.check -eq "action_journal" } |
+            Select-Object -Last 1
+          Write-Host ("Java action journal probe: " + ($actionProbe | ConvertTo-Json -Compress))
+          if ($null -eq $actionProbe -or -not $actionProbe.ready -or $actionProbe.replay -ne "REPLAY" -or $actionProbe.content_transmitted) {
+            throw "Packaged Java action journal is unavailable."
           }
       - name: Upload unsigned QA artifact
         uses: actions/upload-artifact@v4

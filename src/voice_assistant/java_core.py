@@ -8,10 +8,12 @@ runtime.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 from queue import Empty, Full, Queue
+import re
 import subprocess
 import threading
 from typing import Any, Protocol, Sequence
@@ -30,6 +32,21 @@ _CLASSIFICATION_MAP = {
 _PREFERENCES = frozenset({"AUTO", "LOCAL", "CORPORATE", "EXTERNAL"})
 _ROUTES = frozenset({"LOCAL", "CORPORATE", "EXTERNAL"})
 _STATUSES = frozenset({"SELECTED", "BLOCKED", "UNAVAILABLE"})
+_CLAIM_DISPOSITIONS = frozenset({"CLAIMED", "REPLAY", "IN_PROGRESS", "CONFLICT"})
+_INSPECTION_DISPOSITIONS = frozenset(
+    {"NOT_FOUND", "IN_PROGRESS", "COMPLETED", "CONFLICT"}
+)
+_COMPLETION_DISPOSITIONS = frozenset(
+    {"RECORDED", "REPLAY", "NOT_CLAIMED", "CONFLICT"}
+)
+_SAFE_ACTION_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,199}\Z")
+_FINGERPRINT = re.compile(r"[a-f0-9]{64}\Z")
+_CLAIM_TOKEN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z",
+    re.IGNORECASE,
+)
+_RESULT_CODE = re.compile(r"[A-Z0-9][A-Z0-9._:-]{0,127}\Z")
+_EXTERNAL_REFERENCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}\Z")
 
 
 class JavaCoreUnavailable(RuntimeError):
@@ -46,6 +63,70 @@ class JavaRouteDecision:
     route: str | None
     reason: str
     local_fallback_before_first_output: bool
+
+
+@dataclass(frozen=True, slots=True)
+class JavaActionExecution:
+    outcome: str
+    result_code: str
+    external_reference: str | None
+    completed_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class JavaActionClaim:
+    disposition: str
+    claim_token: str | None
+    result: JavaActionExecution | None
+
+
+@dataclass(frozen=True, slots=True)
+class JavaActionInspection:
+    disposition: str
+    claim_token: str | None
+    result: JavaActionExecution | None
+
+
+@dataclass(frozen=True, slots=True)
+class JavaActionCompletion:
+    disposition: str
+    result: JavaActionExecution | None
+
+
+class ActionJournalRuntime(Protocol):
+    @property
+    def configured(self) -> bool: ...
+
+    @property
+    def ready(self) -> bool: ...
+
+    def start(self) -> bool: ...
+
+    def claim_action(
+        self,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> JavaActionClaim: ...
+
+    def inspect_action(
+        self,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> JavaActionInspection: ...
+
+    def complete_action(
+        self,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+        claim_token: str,
+        outcome: str,
+        result_code: str,
+        external_reference: str | None = None,
+        completed_at: str | None = None,
+    ) -> JavaActionCompletion: ...
 
 
 class CorePolicyRuntime(Protocol):
@@ -72,6 +153,48 @@ class CorePolicyRuntime(Protocol):
     ) -> JavaRouteDecision: ...
 
     def close(self) -> None: ...
+
+
+def _validate_action_identity(idempotency_key: str, request_fingerprint: str) -> None:
+    if not _SAFE_ACTION_KEY.fullmatch(idempotency_key):
+        raise ValueError("Unsupported action idempotency key")
+    if not _FINGERPRINT.fullmatch(request_fingerprint):
+        raise ValueError("Unsupported action request fingerprint")
+
+
+def _parse_action_execution(value: Any) -> JavaActionExecution:
+    if not isinstance(value, dict) or set(value) not in (
+        {"outcome", "resultCode", "completedAt"},
+        {"outcome", "resultCode", "externalReference", "completedAt"},
+    ):
+        raise JavaCoreProtocolError("Java action result is invalid")
+    outcome = value.get("outcome")
+    result_code = value.get("resultCode")
+    external_reference = value.get("externalReference")
+    completed_at = value.get("completedAt")
+    if outcome not in {"SUCCESS", "FAILURE"}:
+        raise JavaCoreProtocolError("Java action outcome is invalid")
+    if not isinstance(result_code, str) or not _RESULT_CODE.fullmatch(result_code):
+        raise JavaCoreProtocolError("Java action result code is invalid")
+    if external_reference is not None and (
+        not isinstance(external_reference, str)
+        or not _EXTERNAL_REFERENCE.fullmatch(external_reference)
+    ):
+        raise JavaCoreProtocolError("Java action external reference is invalid")
+    if not isinstance(completed_at, str):
+        raise JavaCoreProtocolError("Java action completion time is invalid")
+    try:
+        parsed_time = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise JavaCoreProtocolError("Java action completion time is invalid") from exc
+    if parsed_time.tzinfo is None:
+        raise JavaCoreProtocolError("Java action completion time is invalid")
+    return JavaActionExecution(
+        outcome=outcome,
+        result_code=result_code,
+        external_reference=external_reference,
+        completed_at=completed_at,
+    )
 
 
 def java_classification(value: str) -> str:
@@ -259,6 +382,155 @@ class JavaCorePolicyClient:
         ):
             raise JavaCoreProtocolError("Java route decision is invalid")
         return JavaRouteDecision(status, route, reason, fallback)
+
+    def claim_action(
+        self,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> JavaActionClaim:
+        _validate_action_identity(idempotency_key, request_fingerprint)
+        response = self._request(
+            "action.claim",
+            {
+                "idempotencyKey": idempotency_key,
+                "requestFingerprint": request_fingerprint,
+            },
+            expected_type="action.claim.result",
+        )
+        payload = response.get("payload")
+        if not isinstance(payload, dict):
+            raise JavaCoreProtocolError("Java action claim is invalid")
+        disposition = payload.get("disposition")
+        if disposition not in _CLAIM_DISPOSITIONS:
+            raise JavaCoreProtocolError("Java action claim disposition is invalid")
+        expected_keys = {
+            "CLAIMED": {"disposition", "claimToken"},
+            "REPLAY": {"disposition", "result"},
+            "IN_PROGRESS": {"disposition"},
+            "CONFLICT": {"disposition"},
+        }[disposition]
+        if set(payload) != expected_keys:
+            raise JavaCoreProtocolError("Java action claim payload is invalid")
+        claim_token = payload.get("claimToken")
+        if disposition == "CLAIMED" and (
+            not isinstance(claim_token, str) or not _CLAIM_TOKEN.fullmatch(claim_token)
+        ):
+            raise JavaCoreProtocolError("Java action claim token is invalid")
+        result = (
+            _parse_action_execution(payload.get("result"))
+            if disposition == "REPLAY"
+            else None
+        )
+        return JavaActionClaim(disposition, claim_token, result)
+
+    def inspect_action(
+        self,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> JavaActionInspection:
+        _validate_action_identity(idempotency_key, request_fingerprint)
+        response = self._request(
+            "action.inspect",
+            {
+                "idempotencyKey": idempotency_key,
+                "requestFingerprint": request_fingerprint,
+            },
+            expected_type="action.inspect.result",
+        )
+        payload = response.get("payload")
+        if not isinstance(payload, dict):
+            raise JavaCoreProtocolError("Java action inspection is invalid")
+        disposition = payload.get("disposition")
+        if disposition not in _INSPECTION_DISPOSITIONS:
+            raise JavaCoreProtocolError("Java action inspection disposition is invalid")
+        expected_keys = {
+            "NOT_FOUND": {"disposition"},
+            "CONFLICT": {"disposition"},
+            "IN_PROGRESS": {"disposition", "claimToken"},
+            "COMPLETED": {"disposition", "result"},
+        }[disposition]
+        if set(payload) != expected_keys:
+            raise JavaCoreProtocolError("Java action inspection payload is invalid")
+        claim_token = payload.get("claimToken")
+        if disposition == "IN_PROGRESS" and (
+            not isinstance(claim_token, str) or not _CLAIM_TOKEN.fullmatch(claim_token)
+        ):
+            raise JavaCoreProtocolError("Java action inspection token is invalid")
+        result = (
+            _parse_action_execution(payload.get("result"))
+            if disposition == "COMPLETED"
+            else None
+        )
+        return JavaActionInspection(disposition, claim_token, result)
+
+    def complete_action(
+        self,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+        claim_token: str,
+        outcome: str,
+        result_code: str,
+        external_reference: str | None = None,
+        completed_at: str | None = None,
+    ) -> JavaActionCompletion:
+        _validate_action_identity(idempotency_key, request_fingerprint)
+        if not _CLAIM_TOKEN.fullmatch(claim_token):
+            raise ValueError("Unsupported action claim token")
+        normalized_outcome = outcome.strip().upper()
+        if normalized_outcome not in {"SUCCESS", "FAILURE"}:
+            raise ValueError("Unsupported action outcome")
+        if not _RESULT_CODE.fullmatch(result_code):
+            raise ValueError("Unsupported action result code")
+        if external_reference is not None and not _EXTERNAL_REFERENCE.fullmatch(
+            external_reference
+        ):
+            raise ValueError("Unsupported action external reference")
+        completion_time = completed_at or datetime.now(timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        )
+        try:
+            parsed_time = datetime.fromisoformat(completion_time.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Unsupported action completion time") from exc
+        if parsed_time.tzinfo is None:
+            raise ValueError("Unsupported action completion time")
+        payload: dict[str, Any] = {
+            "idempotencyKey": idempotency_key,
+            "requestFingerprint": request_fingerprint,
+            "claimToken": claim_token,
+            "outcome": normalized_outcome,
+            "resultCode": result_code,
+            "completedAt": completion_time,
+        }
+        if external_reference is not None:
+            payload["externalReference"] = external_reference
+        response = self._request(
+            "action.complete",
+            payload,
+            expected_type="action.complete.result",
+        )
+        body = response.get("payload")
+        if not isinstance(body, dict):
+            raise JavaCoreProtocolError("Java action completion is invalid")
+        disposition = body.get("disposition")
+        if disposition not in _COMPLETION_DISPOSITIONS:
+            raise JavaCoreProtocolError("Java action completion disposition is invalid")
+        expected_keys = (
+            {"disposition", "result"}
+            if disposition in {"RECORDED", "REPLAY"}
+            else {"disposition"}
+        )
+        if set(body) != expected_keys:
+            raise JavaCoreProtocolError("Java action completion payload is invalid")
+        result = (
+            _parse_action_execution(body.get("result"))
+            if disposition in {"RECORDED", "REPLAY"}
+            else None
+        )
+        return JavaActionCompletion(disposition, result)
 
     def close(self) -> None:
         self._ready = False

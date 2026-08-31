@@ -57,10 +57,48 @@ class SqliteActionJournalTest {
         }
 
         try (ActionJournal afterRestart = new SqliteActionJournal(database)) {
+            ActionInspectionResult inspection = afterRestart.inspect(
+                    new ActionInspectionRequest(KEY, FINGERPRINT)
+            );
+            assertEquals(
+                    ActionInspectionDisposition.IN_PROGRESS,
+                    inspection.disposition()
+            );
+            assertNotNull(inspection.claimToken());
             assertEquals(
                     ActionClaimDisposition.IN_PROGRESS,
                     afterRestart.claim(claim(FINGERPRINT)).disposition()
             );
+        }
+    }
+
+    @Test
+    void inspectionDistinguishesMissingConflictAndCompletedWithoutMutation()
+            throws Exception {
+        Path database = temporaryDirectory.resolve("inspection.sqlite");
+        try (ActionJournal journal = new SqliteActionJournal(database)) {
+            assertEquals(
+                    ActionInspectionDisposition.NOT_FOUND,
+                    journal.inspect(
+                            new ActionInspectionRequest(KEY, FINGERPRINT)
+                    ).disposition()
+            );
+            ActionClaimResult claim = journal.claim(claim(FINGERPRINT));
+            assertEquals(
+                    ActionInspectionDisposition.CONFLICT,
+                    journal.inspect(
+                            new ActionInspectionRequest(KEY, OTHER_FINGERPRINT)
+                    ).disposition()
+            );
+            journal.complete(completion(claim.claimToken(), FINGERPRINT, success()));
+            ActionInspectionResult completed = journal.inspect(
+                    new ActionInspectionRequest(KEY, FINGERPRINT)
+            );
+            assertEquals(
+                    ActionInspectionDisposition.COMPLETED,
+                    completed.disposition()
+            );
+            assertEquals(success(), completed.result());
         }
     }
 

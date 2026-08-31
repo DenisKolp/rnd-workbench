@@ -110,6 +110,17 @@ frame:
 - `IN_PROGRESS` — claim уже существует, повторно выполнять действие нельзя;
 - `CONFLICT` — тот же key использован с другим fingerprint.
 
+После перезапуска backend проверяет состояние без claim и без выполнения эффекта:
+
+```json
+{"version":"1.0","type":"action.inspect","correlationId":"action-42-recovery","payload":{"idempotencyKey":"jira:RND-42:version-7","requestFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+```
+
+`NOT_FOUND` означает отсутствие записи, `IN_PROGRESS` возвращает существующий
+`claimToken`, `COMPLETED` — сохранённый безопасный результат, `CONFLICT` — другой
+fingerprint. `action.inspect` ничего не изменяет и сам по себе не разрешает
+повтор внешнего вызова.
+
 После side effect владелец claim сохраняет результат:
 
 ```json
@@ -141,8 +152,10 @@ lease expiry нет, поскольку оно создало бы риск ду
 - `4` — ошибка записи `stdout`.
 
 Обязательный аргумент `--journal` задаёт отдельный SQLite-файл профиля. macOS и
-Windows Python backend запускают процесс для metadata-only `health.check` и
-`route.decide`; Swift/Electron получают только безопасную диагностику. Публичный
+Windows Python backend запускают процесс для metadata-only `health.check`,
+`route.decide`, `action.claim`, `action.inspect` и `action.complete`;
+Swift/Electron получают только безопасную диагностику. Публичный
 внешний маршрут на macOS дополнительно требует process opt-in, классификацию
-`PUBLIC` и explicit consent в каждом запросе. Connector action adapters пока не
-подключены и составляют следующий вертикальный инкремент.
+`PUBLIC` и explicit consent в каждом запросе. Production-коннекторы ещё не
+подключены: общий action boundary готов и блокирует действие без работающего
+журнала, но реальный API и connector-specific reconciliation требуют стендов.

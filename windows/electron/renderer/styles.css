@@ -219,6 +219,19 @@ body[data-mode="compact"][data-compact-view="chat"] .chat-card { min-height: 0; 
 .meeting-import-card p { margin: 5px 0 9px; color: var(--muted); font-size: 9px; line-height: 1.45; }
 .meeting-import-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .meeting-import-card .secondary-button { width: 100%; white-space: normal; line-height: 1.25; }
+.approval-card { margin: 0 0 13px; padding: 12px; border: 1px solid #d7e0ea; border-radius: 12px; background: #fbfcfe; }
+.approval-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.approval-heading strong { color: var(--blue); font-size: 10px; }
+.approval-heading span { min-width: 20px; padding: 2px 6px; color: var(--blue); border-radius: 999px; background: var(--blue-soft); text-align: center; font-size: 8px; font-weight: 800; }
+.approval-card > p { margin: 5px 0 9px; color: var(--muted); font-size: 8px; line-height: 1.45; }
+.approval-list { display: grid; gap: 7px; }
+.approval-empty { color: var(--muted); font-size: 8px; }
+.approval-item { display: grid; gap: 5px; padding: 8px; border-radius: 9px; background: var(--blue-soft); }
+.approval-item.error { background: #fff1f0; }
+.approval-item-title { overflow: hidden; color: var(--ink); font-size: 9px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.approval-item-meta { color: var(--muted); font-size: 8px; }
+.approval-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.approval-actions button { min-width: 0; padding: 6px; font-size: 8px; }
 .readiness-list { margin: 0; padding: 0; list-style: none; }
 .readiness-list li { display: grid; grid-template-columns: 25px minmax(0, 1fr); gap: 7px; padding: 9px 0; border-bottom: 1px solid #edf1f5; }
 .readiness-list li > span { display: grid; width: 23px; height: 23px; place-items: center; border-radius: 50%; font-size: 10px; font-weight: 800; }

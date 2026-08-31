@@ -210,11 +210,27 @@ def test_electron_bundles_java_policy_companion_behind_python_ml_bridge() -> Non
     assert '"from": "../dist/java-core"' in package
     assert '"from": "../dist/licenses"' in package
     assert "JSONL" in docs
-    assert "Java core" in docs
+    assert "Java 21 action journal" in docs
     renderer = RENDERER.read_text(encoding="utf-8")
     assert "java_core_policy" in renderer
     assert "javaFallbackNotified" in renderer
     assert "резервная встроенная политика" in renderer
+
+
+def test_windows_approval_center_exposes_safe_action_state_and_commands() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+    styles = (ROOT / "windows" / "electron" / "renderer" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="approvalCount"' in html
+    assert 'id="approvalList"' in html
+    assert "function renderApprovals()" in renderer
+    assert 'sendCommand("resolve_approval"' in renderer
+    assert "java_action_journal" in renderer
+    assert "сверк" in renderer.casefold()
+    assert ".approval-actions" in styles
 
 
 def test_windows_full_window_imports_express_transcript_or_package_through_trusted_ipc() -> None:
@@ -296,7 +312,9 @@ def test_windows_build_uses_isolated_pinned_non_mlx_dependencies() -> None:
     assert "windows/build.ps1 -Python python -WithVoice" in workflow
     assert '"command":"voice_dependency_probe"' in workflow
     assert '"command":"core_policy_probe"' in workflow
+    assert '"command":"core_action_journal_probe"' in workflow
     assert "Java core policy probe:" in workflow
+    assert "Java action journal probe:" in workflow
     assert "Voice dependency probe:" in workflow
     assert "RnD-Workbench-Windows-voice-ready-unsigned-QA" in workflow
 

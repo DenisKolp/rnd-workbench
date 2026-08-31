@@ -56,6 +56,33 @@ def main() -> None:
             if args.external_models_enabled
             else None
         )
+        action_key = "verify:desktop:action-0001"
+        action_fingerprint = "c" * 64
+        missing_action = client.inspect_action(
+            idempotency_key=action_key,
+            request_fingerprint=action_fingerprint,
+        )
+        action_claim = client.claim_action(
+            idempotency_key=action_key,
+            request_fingerprint=action_fingerprint,
+        )
+        claimed_action = client.inspect_action(
+            idempotency_key=action_key,
+            request_fingerprint=action_fingerprint,
+        )
+        action_completion = client.complete_action(
+            idempotency_key=action_key,
+            request_fingerprint=action_fingerprint,
+            claim_token=str(action_claim.claim_token),
+            outcome="SUCCESS",
+            result_code="VERIFY.SUCCESS",
+            external_reference="RND-VERIFY-1",
+            completed_at="2026-08-31T16:00:00Z",
+        )
+        action_replay = client.claim_action(
+            idempotency_key=action_key,
+            request_fingerprint=action_fingerprint,
+        )
         result = {
             "ready": client.ready,
             "protocol_version": client.diagnostics()["protocol_version"],
@@ -71,6 +98,19 @@ def main() -> None:
                 "local_fallback_before_first_output": (
                     corporate.local_fallback_before_first_output
                 ),
+            },
+            "action_journal": {
+                "before_claim": missing_action.disposition,
+                "claim": action_claim.disposition,
+                "inspect": claimed_action.disposition,
+                "completion": action_completion.disposition,
+                "replay": action_replay.disposition,
+                "result_code": (
+                    action_replay.result.result_code
+                    if action_replay.result is not None
+                    else None
+                ),
+                "content_transmitted": False,
             },
             "content_transmitted": False,
         }
@@ -96,6 +136,15 @@ def main() -> None:
                 "route": "CORPORATE",
                 "reason": "CORPORATE_SELECTED",
                 "local_fallback_before_first_output": True,
+            },
+            "action_journal": {
+                "before_claim": "NOT_FOUND",
+                "claim": "CLAIMED",
+                "inspect": "IN_PROGRESS",
+                "completion": "RECORDED",
+                "replay": "REPLAY",
+                "result_code": "VERIFY.SUCCESS",
+                "content_transmitted": False,
             },
             "content_transmitted": False,
         }

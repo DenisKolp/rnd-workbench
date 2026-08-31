@@ -127,8 +127,9 @@ API-ключи, cookies, пароли и bearer tokens не входят в enve
 неизвестная версия или команда отклоняются безопасной ошибкой без отражения
 входного content. Размер line, JSON string и nesting ограничены.
 
-Публичный контракт включает `route.decide`, `action.claim`, `action.complete` и
-`health.check`; JSON Schema находятся в `core-java/src/main/resources/schema`, а
+Публичный контракт включает `route.decide`, `action.claim`, `action.inspect`,
+`action.complete` и `health.check`; JSON Schema находятся в
+`core-java/src/main/resources/schema`, а
 правила и примеры — в `core-java/docs/ipc-v1.md`. JSON сериализуется
 детерминированно: свойства и map keys сортируются, dates имеют ISO-8601 вид.
 
@@ -147,8 +148,8 @@ Loopback transport остаётся допустимым будущим вари
 
 Ограничения:
 
-- macOS/Windows Python bridge запускает Java core только для read-only routing;
-  connector action paths пока не подключены;
+- macOS/Windows Python bridge использует Java core для routing и durable
+  claim/inspect/result; production-коннекторы и их API пока не подключены;
 - обе desktop-сборки выросли из-за bundled `jlink` runtime и Java libraries;
 - версия схемы и совместимость процессов становятся отдельным контрактом;
 - SQLite journal не может атомарно коммитить транзакцию вместе с произвольным
@@ -156,6 +157,7 @@ Loopback transport остаётся допустимым будущим вари
 
 ## План внедрения
 
-1. Перевести preview/confirmation интеграционных действий на Java claim/result.
-2. Реализовать connector reconciliation для зависших claims до production writes.
+1. Подключить production-коннекторы к готовому claim/inspect/result boundary и
+   реализовать их idempotency lookup на корпоративных тестовых стендах.
+2. Провести crash/restart reconciliation soak-test до production writes.
 3. После пилотного soak-test удалить дублирующие политики из оболочек.

@@ -120,6 +120,16 @@ def test_routing_metrics_and_non_mutating_fallback_are_visible_in_swift_ui() -> 
     assert 'settings["llm_mode"]' not in fallback_block
 
 
+def test_java_action_journal_and_reconciliation_are_visible_in_settings() -> None:
+    source = SWIFT_SOURCE.read_text(encoding="utf-8")
+
+    assert "@Published private(set) var javaActionJournalReady = false" in source
+    assert "@Published private(set) var actionRecoveryAttention = 0" in source
+    assert 'javaActionJournalReady = bool(actionJournal["ready"])' in source
+    assert '"Защита внешних действий"' in source
+    assert 'return "Нужна сверка: \\(actionRecoveryAttention)"' in source
+
+
 def test_editable_voice_dictation_is_returned_to_the_shared_composer() -> None:
     source = SWIFT_SOURCE.read_text(encoding="utf-8")
 

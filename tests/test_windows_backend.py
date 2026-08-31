@@ -8,7 +8,14 @@ import time
 
 import pytest
 
-from voice_assistant.java_core import JavaRouteDecision
+from voice_assistant.integrations import IntegrationIntent, IntegrationRequest
+from voice_assistant.java_core import (
+    JavaActionClaim,
+    JavaActionCompletion,
+    JavaActionExecution,
+    JavaActionInspection,
+    JavaRouteDecision,
+)
 from voice_assistant.store import AssistantStore
 from voice_assistant.windows_backend import (
     EventEmitter,
@@ -160,6 +167,41 @@ class FakeCorePolicy:
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeActionCorePolicy(FakeCorePolicy):
+    def __init__(self) -> None:
+        super().__init__()
+        self.action_calls: list[dict[str, object]] = []
+        self.result: JavaActionExecution | None = None
+
+    def inspect_action(self, **kwargs):  # noqa: ANN003, ANN201
+        self.action_calls.append({"method": "inspect", **kwargs})
+        return JavaActionInspection(
+            "COMPLETED" if self.result else "NOT_FOUND",
+            None,
+            self.result,
+        )
+
+    def claim_action(self, **kwargs):  # noqa: ANN003, ANN201
+        self.action_calls.append({"method": "claim", **kwargs})
+        if self.result is not None:
+            return JavaActionClaim("REPLAY", None, self.result)
+        return JavaActionClaim(
+            "CLAIMED",
+            "00000000-0000-4000-8000-000000000001",
+            None,
+        )
+
+    def complete_action(self, **kwargs):  # noqa: ANN003, ANN201
+        self.action_calls.append({"method": "complete", **kwargs})
+        self.result = JavaActionExecution(
+            outcome=str(kwargs["outcome"]),
+            result_code=str(kwargs["result_code"]),
+            external_reference=None,
+            completed_at="2026-08-31T18:00:00Z",
+        )
+        return JavaActionCompletion("RECORDED", self.result)
 
 
 class DictationOnlyVoiceRuntime(FakeVoiceRuntime):
@@ -436,6 +478,77 @@ def test_core_policy_probe_contains_only_safe_contract_metadata(tmp_path) -> Non
         "route": "LOCAL",
         "reason": "LOCAL_SELECTED",
     }
+
+
+def test_core_action_journal_probe_exercises_replay_without_user_content(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    emitter = CapturingEmitter()
+    core = FakeActionCorePolicy()
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        core_policy=core,
+    )
+
+    backend.handle({"command": "core_action_journal_probe"})
+
+    diagnostic = emitter.events[-1]
+    assert diagnostic["check"] == "action_journal"
+    assert diagnostic["ready"] is True
+    assert diagnostic["initial_state"] == "NOT_FOUND"
+    assert diagnostic["claim"] == "CLAIMED"
+    assert diagnostic["completion"] == "RECORDED"
+    assert diagnostic["replay"] == "REPLAY"
+    assert diagnostic["result_code"] == "PROBE.SUCCESS"
+    assert diagnostic["content_transmitted"] is False
+    serialized = json.dumps(core.action_calls, ensure_ascii=False)
+    assert "prompt" not in serialized.casefold()
+    assert "transcript" not in serialized.casefold()
+
+
+def test_windows_approval_command_is_visible_and_never_claims_disconnected_success(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        core_policy=FakeCorePolicy(),
+    )
+    task = backend.store.create_task(
+        backend.current_workspace_id,
+        "Создать задачу во внешней системе",
+    )
+    approval = backend.integration_hub.stage(
+        IntegrationRequest(
+            "jira",
+            "issue.create",
+            IntegrationIntent.WRITE,
+            {"summary": "Проверить пилот"},
+        ),
+        task_id=task["id"],
+    )
+
+    backend.handle(
+        {
+            "command": "resolve_approval",
+            "id": approval["id"],
+            "status": "approved",
+        }
+    )
+
+    row = backend.store._rows(
+        "SELECT status, result FROM approvals WHERE id=?",
+        (approval["id"],),
+    )[0]
+    assert row["status"] == "error"
+    assert "не подключена" in row["result"]
+    assert any(event["type"] == "approval_execution_failed" for event in emitter.events)
+    snapshot = next(event for event in reversed(emitter.events) if event["type"] == "snapshot")
+    visible = {item["id"]: item for item in snapshot["data"]["approvals"]}
+    assert visible[approval["id"]]["status"] == "error"
+    assert backend.store.get_task(task["id"])["status"] == "needs_user"
 
 
 def test_voice_command_reports_actionable_diagnostics_when_runtime_is_absent(tmp_path) -> None:

@@ -4,6 +4,8 @@ import com.rndworkbench.core.journal.ActionClaimResult;
 import com.rndworkbench.core.journal.ActionCompletionRequest;
 import com.rndworkbench.core.journal.ActionCompletionResult;
 import com.rndworkbench.core.journal.ActionExecutionResult;
+import com.rndworkbench.core.journal.ActionInspectionRequest;
+import com.rndworkbench.core.journal.ActionInspectionResult;
 import com.rndworkbench.core.journal.ActionJournal;
 import com.rndworkbench.core.routing.PilotModelRoutingPolicy;
 import org.junit.jupiter.api.Test;
@@ -104,6 +106,21 @@ class IpcProcessorTest {
     }
 
     @Test
+    void inspectionReturnsOnlyTheOwningTokenForAnInProgressFingerprint() {
+        String response = processor.process("""
+                {"version":"1.0","type":"action.inspect","correlationId":"req-9","payload":{"idempotencyKey":"jira:RND-42:version-7","requestFingerprint":"%s"}}
+                """.formatted(FINGERPRINT).strip());
+
+        assertEquals(
+                "{\"correlationId\":\"req-9\",\"ok\":true,\"payload\":{"
+                        + "\"claimToken\":\"" + TOKEN + "\","
+                        + "\"disposition\":\"IN_PROGRESS\"},"
+                        + "\"type\":\"action.inspect.result\",\"version\":\"1.0\"}",
+                response
+        );
+    }
+
+    @Test
     void meetingPackagePlanExposesLocalImportWithoutClaimingLiveSynapse() {
         String response = processor.process("""
                 {"version":"1.0","type":"meeting.package.plan","correlationId":"meeting-1","payload":{"schemaVersion":"1.0","sourceSystem":"synapse","importMode":"LOCAL_PACKAGE_IMPORT","packageId":"synapse-demo-42","title":"Статус пилота","occurredAt":"2026-08-31T10:00:00+03:00","organizer":"Анна","classification":"confidential","participants":["Анна","Иван","Олег"],"parts":[{"role":"TRANSCRIPT","relativePath":"transcript.txt","title":"Транскрипт","mediaType":"text/plain","sha256":"%s","sizeBytes":1200},{"role":"DESCRIPTION","relativePath":"description.md","title":"Описание","mediaType":"text/markdown","sha256":"%s","sizeBytes":320}],"metadata":{"project":"pilot"}}}
@@ -165,6 +182,12 @@ class IpcProcessorTest {
                 throws SQLException {
             ActionExecutionResult result = request.result();
             return ActionCompletionResult.recorded(result);
+        }
+
+        @Override
+        public ActionInspectionResult inspect(ActionInspectionRequest request)
+                throws SQLException {
+            return ActionInspectionResult.inProgress(TOKEN);
         }
     }
 }

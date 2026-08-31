@@ -940,6 +940,8 @@ final class BackendController: ObservableObject {
     @Published var routingFallbackMessage: String?
     @Published private(set) var javaCorePolicyConfigured = false
     @Published private(set) var javaCorePolicyReady = false
+    @Published private(set) var javaActionJournalReady = false
+    @Published private(set) var actionRecoveryAttention = 0
     @Published private(set) var dictationReviewSequence = 0
     @Published private(set) var presentationMode: AssistantPresentationMode = .full
     @Published private(set) var accessibilityPermissionGranted = false
@@ -1082,6 +1084,14 @@ final class BackendController: ObservableObject {
         if javaCorePolicyReady { return "Java 21 · активна" }
         if javaCorePolicyConfigured { return "Встроенная резервная политика" }
         return "Не настроена в development-режиме"
+    }
+    var javaActionJournalStatusLabel: String {
+        if actionRecoveryAttention > 0 {
+            return "Нужна сверка: \(actionRecoveryAttention)"
+        }
+        return javaActionJournalReady
+            ? "Java 21 · защита от дублей активна"
+            : "Недоступен · внешние действия блокируются"
     }
     var routeStatusHelp: String {
         if let routingFallbackMessage { return routingFallbackMessage }
@@ -2801,6 +2811,14 @@ final class BackendController: ObservableObject {
            let javaPolicy = platform["java_core_policy"] as? [String: Any] {
             javaCorePolicyConfigured = bool(javaPolicy["configured"])
             javaCorePolicyReady = bool(javaPolicy["ready"])
+            if let actionJournal = platform["java_action_journal"] as? [String: Any] {
+                javaActionJournalReady = bool(actionJournal["ready"])
+                if let recovery = actionJournal["recovery"] as? [String: Any] {
+                    actionRecoveryAttention = Int(
+                        number(recovery["requires_attention"]) ?? 0
+                    )
+                }
+            }
         }
         if let llm = data["llm"] as? [String: Any] {
             let snapshotMode = string(llm, "mode")
@@ -5381,6 +5399,10 @@ struct SettingsView: View {
                 LabeledContent(
                     "Общая политика маршрутизации",
                     value: controller.javaCorePolicyStatusLabel
+                )
+                LabeledContent(
+                    "Защита внешних действий",
+                    value: controller.javaActionJournalStatusLabel
                 )
                 LabeledContent("Активная модель", value: controller.modelName)
 
