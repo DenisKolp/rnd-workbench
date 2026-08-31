@@ -1,0 +1,15 @@
+{
+  "name": "rnd-workbench",
+  "version": "0.8.0",
+  "private": true,
+  "description": "Project context tooling for the local RnD Workbench assistant",
+  "scripts": {
+    "context:init": "project-context init --name \"RnD Workbench\" --module backend:src/voice_assistant --module desktop:macos",
+    "context:lint": "project-context lint",
+    "context:index": "project-context index",
+    "context:doctor": "project-context doctor --json"
+  },
+  "devDependencies": {
+    "mcp-project-context-router": "github:ukolov-dev/mcp-project-context-router"
+  }
+}

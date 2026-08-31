@@ -1,0 +1,42 @@
+project:
+  name: "RnD Workbench"
+  repository: "local-voice-assistant"
+  context_version: 1
+  timezone: Europe/Moscow
+  purpose: "Local-first project memory for the RnD Workbench voice and knowledge assistant."
+  roles: [Developer, Product Designer]
+  flows:
+    - Validate or derive a task contract before implementation.
+    - Build a context pack and inspect existing capabilities.
+    - Run applicable verification and finalize the work.
+routing:
+  default_modules: ["backend", "desktop"]
+  documentation_modules: ["backend", "desktop"]
+context_router:
+  cli_command: npx project-context
+  mcp_server_name: project_context
+  resource_scheme: project-context
+  codex_config_path: ".codex/config.toml"
+  codex_hooks_path: false
+  git_hooks_path: false
+  brand:
+    name: Project Context Router
+    short_name: Project Context
+    marker: PROJECT_CONTEXT
+    logo_text: "[Project Context]"
+    description: local-first project memory, backlog, and verification router
+modules: 
+  backend:
+    path: "src/voice_assistant"
+    aliases: ["backend"]
+    source_globs: ["src/voice_assistant/**/*.{ts,tsx,js,jsx,mjs,cjs,java,kt,kts,go,rs,py,rb,php,cs,sql,xml,yaml,yml,md}"]
+    playbooks: []
+  desktop:
+    path: "macos"
+    aliases: ["desktop"]
+    source_globs: ["macos/**/*.{ts,tsx,js,jsx,mjs,cjs,java,kt,kts,go,rs,py,rb,php,cs,sql,xml,yaml,yml,md}"]
+    playbooks: []
+commands:
+  context_lint: npx project-context lint
+  context_index: npx project-context index
+  context_doctor: npx project-context doctor

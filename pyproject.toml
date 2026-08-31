@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "local-voice-assistant"
+version = "0.2.0"
+description = "A fully local personal AI workspace and interruptible voice assistant for Apple Silicon"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "MIT" }
+dependencies = [
+  "mlx-audio>=0.3.1,<1",
+  "mlx-lm>=0.26.2,<1",
+  "numpy>=1.26,<3",
+  "sounddevice>=0.5.1,<1",
+  "soundfile>=0.13.1,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9"]
+
+[project.scripts]
+local-voice = "voice_assistant.app:main"
+local-voice-backend = "voice_assistant.ui_backend:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voice_assistant"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

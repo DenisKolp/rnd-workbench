@@ -1,0 +1,7 @@
+[mcp_servers.project_context]
+command = "node"
+args = ["node_modules/mcp-project-context-router/bin/project-context-mcp"]
+cwd = ".."
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+env = { PROJECT_CONTEXT_TOOL_PROFILE = "core" }
