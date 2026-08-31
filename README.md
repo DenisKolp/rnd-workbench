@@ -17,10 +17,11 @@ RnD Workbench — независимый исследовательский пр
 Проверенная референсная голосовая сборка сейчас работает на macOS Apple Silicon.
 Windows-клиент реализован на Electron; его source vertical уже включает
 WebAudio, Faster-Whisper, OmniVoice-Fast и перебивание. Windows CI собирает
-unsigned text-first portable package и запускает packaged backend smoke-test;
-предоставление локального voice runtime, акустический hardware QA и подпись
-установщика ещё не выполнены. Этот статус не выдаётся за готовую пилотную
-поставку.
+unsigned voice-ready portable package и проверяет импорт Faster-Whisper,
+CTranslate2 и Tokenizers непосредственно из packaged backend. Веса Whisper и
+локальный OmniVoice-Fast server остаются внешними deployment-компонентами;
+акустический hardware QA и подпись установщика ещё не выполнены. Этот статус не
+выдаётся за готовую пилотную поставку.
 
 Референсный локальный голосовой контур macOS:
 

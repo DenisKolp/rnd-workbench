@@ -31,7 +31,8 @@ Faster-Whisper weights и loopback OmniVoice-Fast server Python-мост чес�
 | TTS, единый голос, перебивание | Готово в исходниках | Один короткий OmniVoice-Fast запрос с фиксированными profile/seed, PCM stream, limiter, 12-мс fade и barge-in; акустические SLO не измерены |
 | Импорт встреч eXpress | Готово в исходниках | Локальный Faster-Whisper обрабатывает выбранный аудиофайл; также доступны готовый транскрипт и пакет с provenance. Нужен Windows hardware QA |
 | Jira / Kaiten / Confluence / почта / календарь | Не подключено | Нужны корпоративные API, OAuth/SSO и тестовые стенды |
-| Подписанный установщик | Не проверено | Windows CI создаёт unsigned text-first portable artifact и smoke-тестирует packaged backend; подпись, voice runtime и hardware QA не выполнены |
+| Voice-ready portable QA artifact | Проверено в CI | Frozen backend импортирует Faster-Whisper, CTranslate2 и Tokenizers; artifact хранится семь дней |
+| Подписанный установщик | Не проверено | Windows CI создаёт unsigned portable artifact; веса Whisper, OmniVoice server, подпись и hardware QA не входят в эту проверку |
 
 Статусы «в исходниках» означают, что код и автоматические контрактные тесты
 готовы в репозитории. Это не заменяет запуск, подпись и UX-проверку на реальных
@@ -109,28 +110,35 @@ build-окружение, где Python, PyInstaller, Node.js и npm уже ус
 powershell -ExecutionPolicy Bypass -File windows\build.ps1
 ```
 
-Voice-вариант собирается только после тех же явных preflight-проверок:
+Voice-вариант собирается только в окружении с закреплёнными зависимостями из
+`windows/requirements-voice.txt`:
 
 ```powershell
+python -m pip install -r windows\requirements-voice.txt
 powershell -ExecutionPolicy Bypass -File windows\build.ps1 -WithVoice
 ```
+
+Путь к весам Whisper и URL OmniVoice не требуются во время сборки: это
+deployment-настройки, которые проверяются при запуске capability голоса.
 
 Для воспроизводимости сборки скрипт использует `npm ci` и committed
 `package-lock.json`, а не переразрешает зависимости перед упаковкой.
 
 Результат создаётся в `windows\dist\electron`. GitHub Actions выполняет этот шаг
 на Windows runner, запускает packaged backend smoke-test и сохраняет unsigned
-text-first QA artifact на семь дней. Он не включает подготовленные voice runtime
-и веса и не считается пилотной поставкой до подписи, smoke-test на чистой
-Windows 11 и hardware/acoustic QA.
+voice-ready QA artifact на семь дней. Frozen backend включает библиотеки
+Faster-Whisper/CTranslate2/Tokenizers и проходит их runtime-import probe, но не
+включает веса Whisper или OmniVoice-Fast server. Artifact не считается пилотной
+поставкой до подписи, smoke-test на чистой Windows 11 и hardware/acoustic QA.
 
 ## Следующий обязательный этап голоса
 
 Source-контракт уже реализует `capability`, `state`, `metric`,
 `dictation_ready`, `assistant_delta`, `assistant_end`, `speech_error`, PCM audio
 events и `session_stopped`. Автотесты проверяют порядок и границы сообщений, а
-цифровая диагностика считает peak/clipping. Это ещё не аппаратная валидация:
-перед пилотом нужны сборка и измерения end-of-speech → transcript, first audio,
+цифровая диагностика считает peak/clipping. CI уже собирает voice-ready portable
+artifact и запускает frozen dependency probe, но это ещё не аппаратная
+валидация: перед пилотом нужны измерения end-of-speech → transcript, first audio,
 speaker consistency, реального cancel → mute и barge-in на нескольких моделях
 Windows-ноутбуков и гарнитур. Portable artifact также должен пройти подпись и
 smoke-test на чистой Windows 10/11.
