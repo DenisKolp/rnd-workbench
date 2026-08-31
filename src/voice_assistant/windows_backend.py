@@ -906,6 +906,7 @@ class WindowsPilotBackend:
         self.emit_voice_capability()
         self.emit_dictation_capability()
         self.emitter.emit("ready")
+        self._record_pilot_usage("app_session_started")
         self.emit_snapshot()
         runtime_loadable = bool(
             getattr(
@@ -975,6 +976,8 @@ class WindowsPilotBackend:
             )
         elif name == "pilot_preflight":
             self.run_pilot_preflight()
+        elif name == "set_pilot_feedback":
+            self.set_pilot_feedback(command)
         elif name == "sync_express_meetings":
             self.sync_express_meetings()
         elif name == "ptt_capabilities":
@@ -1173,6 +1176,9 @@ class WindowsPilotBackend:
                 ),
             )
             imported = list(result.get("imported") or [])
+            added = int(result["added"])
+            if added > 0:
+                self._record_pilot_usage("meeting_imported", count=added)
             if imported:
                 last = imported[-1]
                 self.current_workspace_id = workspace_id
@@ -1180,7 +1186,7 @@ class WindowsPilotBackend:
             self.emitter.emit(
                 "express_sync_completed",
                 processed=int(result["processed"]),
-                added=int(result["added"]),
+                added=added,
                 deduplicated=int(result["deduplicated"]),
                 has_more=bool(result["has_more"]),
                 connector=result["connector"],
@@ -1407,6 +1413,7 @@ class WindowsPilotBackend:
                 workspace_id=workspace_id,
             )
             self.current_workspace_id = str(source["workspace_id"])
+            self._record_pilot_usage("meeting_imported")
             self.emitter.emit(
                 "meeting_audio_imported",
                 source=source,
@@ -1446,6 +1453,7 @@ class WindowsPilotBackend:
                 kind="meeting",
             )
             self.current_workspace_id = str(source["workspace_id"])
+            self._record_pilot_usage("meeting_imported")
             self.emitter.emit(
                 "meeting_transcript_imported",
                 source=source,
@@ -1485,6 +1493,8 @@ class WindowsPilotBackend:
             )
             primary = self.store.get_source(str(result["source_id"]))
             self.current_workspace_id = str(primary["workspace_id"])
+            if result["status"] == "imported":
+                self._record_pilot_usage("meeting_imported")
             self.emitter.emit("synapse_package_imported", result=result)
             self.emit_snapshot()
         except (OSError, ValueError, KeyError) as exc:
@@ -1733,6 +1743,26 @@ class WindowsPilotBackend:
         result = self._build_pilot_preflight(refresh_storage=True)
         self.emitter.emit("pilot_preflight", result=result)
         self.emit_snapshot()
+
+    def set_pilot_feedback(self, command: dict[str, Any]) -> None:
+        rating = command.get("usefulness_rating")
+        if isinstance(rating, bool) or not isinstance(rating, int):
+            raise ValueError("Оценка полезности должна быть целым числом от 1 до 5")
+        self.store.set_pilot_usefulness_rating("windows", rating)
+        self.emitter.emit("pilot_feedback_saved", usefulness_rating=rating)
+        self.emit_snapshot()
+
+    def _record_pilot_usage(self, event: str, *, count: int = 1) -> None:
+        try:
+            self.store.record_pilot_usage("windows", event, count=count)
+        except Exception as exc:
+            self.emitter.emit(
+                "diagnostic",
+                component="pilot_usage",
+                check="store_failed",
+                measured=True,
+                error_type=type(exc).__name__,
+            )
 
     def _record_pilot_metric(
         self,
@@ -2043,6 +2073,7 @@ class WindowsPilotBackend:
                 seconds=elapsed,
                 local=True,
             )
+            self._record_pilot_usage("dictation_completed")
         except BaseException as exc:
             if not cancel_event.is_set():
                 self.emitter.emit(
@@ -2392,6 +2423,10 @@ class WindowsPilotBackend:
                 route_metadata=route,
                 performance_metadata=performance,
             )
+            if not interrupted and reply:
+                self._record_pilot_usage(
+                    "voice_turn_completed" if spoken else "text_turn_completed"
+                )
             self.emitter.emit(
                 "assistant_end",
                 text=reply,
@@ -2824,6 +2859,9 @@ class WindowsPilotBackend:
             self.store.connector_checkpoint(CONNECTOR_ID, self.current_workspace_id)
         )
         snapshot["express_connector"] = express_diagnostics
+        snapshot["pilot_metrics"] = self.store.pilot_metrics_summary(
+            platform="windows"
+        )
         snapshot["pilot_preflight"] = self._build_pilot_preflight(
             snapshot.get("pilot_metrics")
         )

@@ -109,8 +109,23 @@
               <span id="pilotMetricsCount">0</span>
             </div>
             <p id="pilotMetricsSummary">Сделайте несколько голосовых запросов на этом устройстве.</p>
-            <button class="secondary-button" id="exportPilotMetricsButton" type="button">Экспорт сводки JSON</button>
-            <small>Только агрегаты задержек и сигнала — без запросов, транскриптов и ответов.</small>
+            <details class="pilot-usage-details">
+              <summary>Использование пилота</summary>
+              <p id="pilotUsageSummary">Активных дней: 0 · завершённых запросов: 0</p>
+              <label class="pilot-rating-label" for="pilotUsefulnessRating">
+                Оценка полезности
+                <select id="pilotUsefulnessRating">
+                  <option value="0" disabled>Не указана</option>
+                  <option value="1">1 из 5</option>
+                  <option value="2">2 из 5</option>
+                  <option value="3">3 из 5</option>
+                  <option value="4">4 из 5</option>
+                  <option value="5">5 из 5</option>
+                </select>
+              </label>
+            </details>
+            <button class="secondary-button" id="exportPilotMetricsButton" type="button">Экспорт отчёта JSON</button>
+            <small>Только агрегаты качества и использования — без запросов, транскриптов, документов и идентификаторов сессий.</small>
           </div>
           <div class="preflight-card">
             <div class="pilot-metrics-heading">

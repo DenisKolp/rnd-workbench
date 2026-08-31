@@ -1044,6 +1044,27 @@ final class BackendController: ObservableObject {
     var llmMode: String { settings["llm_mode"] ?? "local" }
 
     var pilotMetricSampleCount: Int { int(pilotMetrics["sample_count"]) }
+    private var pilotUsage: [String: Any] {
+        pilotMetrics["usage"] as? [String: Any] ?? [:]
+    }
+    var pilotActiveDays: Int { int(pilotUsage["active_days"]) }
+    var pilotCompletedTurns: Int { int(pilotUsage["completed_turns"]) }
+    var pilotUsefulnessRating: Int { int(pilotUsage["usefulness_rating"]) }
+    var pilotUsageSummaryLabel: String {
+        let voiceTurns = int(pilotUsage["voice_turns"])
+        let meetingImports = int(pilotUsage["meeting_imports"])
+        let meetingBriefings = int(pilotUsage["meeting_briefings"])
+        let firstValue = number(pilotUsage["first_value_seconds"])
+        var parts = [
+            "активных дней: \(pilotActiveDays)",
+            "запросов: \(pilotCompletedTurns)",
+            "голосом: \(voiceTurns)",
+        ]
+        if meetingImports > 0 { parts.append("встреч импортировано: \(meetingImports)") }
+        if meetingBriefings > 0 { parts.append("брифингов: \(meetingBriefings)") }
+        if let firstValue { parts.append(String(format: "первый результат %.1f мин", firstValue / 60)) }
+        return parts.joined(separator: " · ")
+    }
 
     var pilotPreflightOverallLabel: String {
         switch pilotPreflightOverall {
@@ -2177,9 +2198,9 @@ final class BackendController: ObservableObject {
 
     func exportPilotMetrics() {
         let panel = NSSavePanel()
-        panel.title = "Экспортировать обезличенную сводку качества"
+        panel.title = "Экспортировать обезличенный отчёт пилота"
         panel.prompt = "Сохранить"
-        panel.nameFieldStringValue = "RnD-Workbench-pilot-metrics.json"
+        panel.nameFieldStringValue = "RnD-Workbench-pilot-report.json"
         panel.allowedContentTypes = [.json]
         panel.canCreateDirectories = true
         panel.begin { [weak self] result in
@@ -2195,6 +2216,14 @@ final class BackendController: ObservableObject {
 
     func runPilotPreflight() {
         send(["command": "pilot_preflight"])
+    }
+
+    func setPilotUsefulnessRating(_ rating: Int) {
+        guard (1...5).contains(rating) else { return }
+        send([
+            "command": "set_pilot_feedback",
+            "usefulness_rating": rating,
+        ])
     }
 
     private func applyPilotPreflight(_ report: [String: Any]) {
@@ -2483,7 +2512,9 @@ final class BackendController: ObservableObject {
             lastAssistantSpoken = true
             statusText = "Ответ озвучен"
         case "pilot_metrics_exported":
-            statusText = "Обезличенная сводка качества сохранена"
+            statusText = "Обезличенная сводка пилота сохранена"
+        case "pilot_feedback_saved":
+            statusText = "Оценка полезности сохранена"
         case "pilot_preflight":
             if let report = event["result"] as? [String: Any] {
                 applyPilotPreflight(report)
@@ -5505,6 +5536,7 @@ struct SettingsView: View {
     @State private var draftEndpointHasStoredKey = false
     @State private var didLoadLLMDrafts = false
     @State private var preflightDetailsExpanded = false
+    @State private var pilotUsageExpanded = false
     @FocusState private var focusedLLMField: LLMSettingsField?
 
     private enum LLMSettingsField: Hashable { case baseURL, model, apiKey }
@@ -5562,10 +5594,30 @@ struct SettingsView: View {
                 Text(controller.pilotMetricsSummaryLabel)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(RnDTheme.ink)
-                Button("Экспортировать сводку JSON") {
+                DisclosureGroup("Использование пилота", isExpanded: $pilotUsageExpanded) {
+                    LabeledContent("Активных дней · 28 дней", value: "\(controller.pilotActiveDays)")
+                    LabeledContent("Завершённых запросов", value: "\(controller.pilotCompletedTurns)")
+                    Text(controller.pilotUsageSummaryLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker(
+                        "Оценка полезности",
+                        selection: Binding(
+                            get: { controller.pilotUsefulnessRating },
+                            set: { controller.setPilotUsefulnessRating($0) }
+                        )
+                    ) {
+                        Text("Не указана").tag(0).disabled(true)
+                        ForEach(1...5, id: \.self) { value in
+                            Text("\(value) из 5").tag(value)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                Button("Экспортировать отчёт JSON") {
                     controller.exportPilotMetrics()
                 }
-                Text("Экспорт содержит только агрегаты задержек и сигнала — без запросов, транскриптов, ответов и идентификаторов сессий.")
+                Text("Экспорт содержит только агрегаты качества, активных дней и завершённых сценариев — без запросов, транскриптов, документов и идентификаторов сессий.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Divider()

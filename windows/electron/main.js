@@ -686,9 +686,9 @@ ipcMain.handle("meeting:choose-audio", async (event) => {
 ipcMain.handle("pilot:export-metrics", async (event) => {
   if (!isTrustedRendererEvent(event) || !mainWindow) return null;
   const selection = await dialog.showSaveDialog(mainWindow, {
-    title: "Экспортировать обезличенную сводку качества",
+    title: "Экспортировать обезличенный отчёт пилота",
     buttonLabel: "Сохранить",
-    defaultPath: path.join(app.getPath("documents"), "RnD-Workbench-pilot-metrics.json"),
+    defaultPath: path.join(app.getPath("documents"), "RnD-Workbench-pilot-report.json"),
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
   if (selection.canceled || !selection.filePath) return null;

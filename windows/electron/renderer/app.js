@@ -1026,6 +1026,27 @@ function renderPilotMetrics() {
   byId("pilotMetricsSummary").textContent = parts.length
     ? parts.join(" · ")
     : "Сделайте несколько голосовых запросов на этом устройстве.";
+  const usage = summary.usage || {};
+  const activeDays = Number(usage.active_days || 0);
+  const completedTurns = Number(usage.completed_turns || 0);
+  const voiceTurns = Number(usage.voice_turns || 0);
+  const meetingImports = Number(usage.meeting_imports || 0);
+  const meetingBriefings = Number(usage.meeting_briefings || 0);
+  const firstValueSeconds = usage.first_value_seconds == null
+    ? null
+    : Number(usage.first_value_seconds);
+  const usageParts = [
+    `активных дней: ${activeDays}`,
+    `запросов: ${completedTurns}`,
+    `голосом: ${voiceTurns}`,
+  ];
+  if (meetingImports > 0) usageParts.push(`встреч импортировано: ${meetingImports}`);
+  if (meetingBriefings > 0) usageParts.push(`брифингов: ${meetingBriefings}`);
+  if (firstValueSeconds != null && Number.isFinite(firstValueSeconds)) {
+    usageParts.push(`первый результат: ${(firstValueSeconds / 60).toFixed(1)} мин`);
+  }
+  byId("pilotUsageSummary").textContent = usageParts.join(" · ");
+  byId("pilotUsefulnessRating").value = String(Number(usage.usefulness_rating || 0));
 }
 
 function renderPilotPreflight() {
@@ -1257,7 +1278,10 @@ function handleBackendEvent(event) {
         toast(String(event.message || "Не удалось распознать аудиозапись eXpress"));
         break;
       case "pilot_metrics_exported":
-        toast("Обезличенная сводка качества сохранена");
+        toast("Обезличенный отчёт пилота сохранён");
+        break;
+      case "pilot_feedback_saved":
+        toast("Оценка полезности сохранена");
         break;
       case "pilot_preflight":
         if (event.result && typeof event.result === "object") {
@@ -1536,6 +1560,12 @@ byId("synapseImportButton").addEventListener("click", () => void chooseSynapsePa
 byId("expressSyncButton").addEventListener("click", syncExpressMeetings);
 byId("exportPilotMetricsButton").addEventListener("click", () => void exportPilotMetrics());
 byId("pilotPreflightButton").addEventListener("click", () => sendCommand("pilot_preflight"));
+byId("pilotUsefulnessRating").addEventListener("change", (event) => {
+  const rating = Number(event.currentTarget.value);
+  if (Number.isInteger(rating) && rating >= 1 && rating <= 5) {
+    sendCommand("set_pilot_feedback", { usefulness_rating: rating });
+  }
+});
 byId("sendButton").addEventListener("click", sendText);
 byId("stopButton").addEventListener("click", () => {
   audioPlayer.stop("user_stop");

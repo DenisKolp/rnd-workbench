@@ -189,6 +189,7 @@ class UIBackend:
             detail=runtime["detail"],
         )
         self.emitter.emit("ready")
+        self._record_pilot_usage("app_session_started")
         self.emit_snapshot()
         self.automation_thread = threading.Thread(
             target=self._automation_loop,
@@ -230,6 +231,8 @@ class UIBackend:
             self.export_pilot_metrics(command)
         elif name == "pilot_preflight":
             self.run_pilot_preflight()
+        elif name == "set_pilot_feedback":
+            self.set_pilot_feedback(command)
         elif name == "sync_express_meetings":
             self.sync_express_meetings()
         elif name == "select_workspace":
@@ -320,6 +323,7 @@ class UIBackend:
             )
             self.emitter.emit("source_imported", source=source)
             if source["kind"] == "meeting":
+                self._record_pilot_usage("meeting_imported")
                 self.current_meeting_id = source.get("meeting_id")
                 self._meeting_diff = []
                 self._meeting_briefing = None
@@ -374,6 +378,7 @@ class UIBackend:
             self._meeting_briefing = None
             primary["meeting_id"] = result["meeting_id"]
             if result["status"] == "imported":
+                self._record_pilot_usage("meeting_imported")
                 self._register_meeting_event(primary)
                 self._sync_meeting_attention()
             self.emitter.emit("synapse_package_imported", result=result)
@@ -434,6 +439,7 @@ class UIBackend:
                 limit=12,
             )
             self._meeting_briefing = self._render_meeting_briefing(meeting, briefing)
+            self._record_pilot_usage("meeting_briefing_prepared")
             self.emit_snapshot()
         elif name == "explain_attention":
             self.submit_text(
@@ -816,6 +822,7 @@ class UIBackend:
                 workspace_id=workspace_id,
             )
             self._set_current_workspace(source["workspace_id"])
+            self._record_pilot_usage("meeting_imported")
             self.current_meeting_id = source.get("meeting_id")
             self._meeting_diff = []
             self._meeting_briefing = None
@@ -895,6 +902,9 @@ class UIBackend:
                 ),
             )
             imported = list(result.get("imported") or [])
+            added = int(result["added"])
+            if added > 0:
+                self._record_pilot_usage("meeting_imported", count=added)
             if imported:
                 last = imported[-1]
                 self._set_current_workspace(workspace_id)
@@ -905,7 +915,7 @@ class UIBackend:
             self.emitter.emit(
                 "express_sync_completed",
                 processed=int(result["processed"]),
-                added=int(result["added"]),
+                added=added,
                 deduplicated=int(result["deduplicated"]),
                 has_more=bool(result["has_more"]),
                 connector=result["connector"],
@@ -1615,6 +1625,26 @@ class UIBackend:
         self.emitter.emit("pilot_preflight", result=result)
         self.emit_snapshot()
 
+    def set_pilot_feedback(self, command: dict[str, Any]) -> None:
+        rating = command.get("usefulness_rating")
+        if isinstance(rating, bool) or not isinstance(rating, int):
+            raise ValueError("Оценка полезности должна быть целым числом от 1 до 5")
+        self.store.set_pilot_usefulness_rating("macos", rating)
+        self.emitter.emit("pilot_feedback_saved", usefulness_rating=rating)
+        self.emit_snapshot()
+
+    def _record_pilot_usage(self, event: str, *, count: int = 1) -> None:
+        try:
+            self.store.record_pilot_usage("macos", event, count=count)
+        except Exception as exc:
+            self.emitter.emit(
+                "diagnostic",
+                component="pilot_usage",
+                check="store_failed",
+                measured=True,
+                error_type=type(exc).__name__,
+            )
+
     def _record_pilot_metric(
         self,
         metric: str,
@@ -1842,6 +1872,7 @@ class UIBackend:
                     editable=True,
                     destination=destination,
                 )
+                self._record_pilot_usage("dictation_completed")
         except PushToTalkDurationExceededError as exc:
             if not capture_stopped_emitted:
                 self.emitter.emit("dictation_stopped", destination=destination)
@@ -2066,6 +2097,7 @@ class UIBackend:
         *,
         speak: bool,
         cancel_event: threading.Event | None = None,
+        usage_event: str | None = None,
     ) -> bool:
         """Handle bounded local commands before any LLM route is selected."""
 
@@ -2123,6 +2155,7 @@ class UIBackend:
                 speak=speak,
                 cancel_event=cancel_event,
                 event="task_plan",
+                usage_event=usage_event,
             )
             return True
 
@@ -2138,6 +2171,7 @@ class UIBackend:
             request_text=text,
             speak=speak,
             cancel_event=cancel_event,
+            usage_event=usage_event,
         )
         return True
 
@@ -2148,6 +2182,7 @@ class UIBackend:
         request_text: str,
         speak: bool,
         cancel_event: threading.Event | None = None,
+        usage_event: str | None = None,
     ) -> dict[str, Any]:
         digest = self.orchestrator.persist_digest(
             self.current_workspace_id,
@@ -2168,6 +2203,7 @@ class UIBackend:
             speak=speak,
             cancel_event=cancel_event,
             event="digest",
+            usage_event=usage_event,
         )
         return digest
 
@@ -2183,6 +2219,7 @@ class UIBackend:
         speak: bool,
         cancel_event: threading.Event | None,
         event: str,
+        usage_event: str | None = None,
     ) -> None:
         started = time.perf_counter()
         cancel_event = cancel_event or threading.Event()
@@ -2250,6 +2287,8 @@ class UIBackend:
                 artifact["id"] if artifact else None,
             ),
         )
+        if usage_event and reply and not cancel_event.is_set():
+            self._record_pilot_usage(usage_event)
         self.emit_snapshot()
 
     def _voice_loop(self) -> None:
@@ -2376,6 +2415,7 @@ class UIBackend:
                         text,
                         speak=True,
                         cancel_event=self.stop_event,
+                        usage_event="voice_turn_completed",
                     ):
                         microphone.discard_pending()
                         continue
@@ -2418,6 +2458,7 @@ class UIBackend:
                     text,
                     speak=speak,
                     cancel_event=cancel_event,
+                    usage_event="text_turn_completed",
                 ):
                     return
                 turn = self._prepare_turn_with_attachments(
@@ -2498,7 +2539,9 @@ class UIBackend:
                 self._meeting_diff = []
                 self._meeting_briefing = None
                 self._register_meeting_event(source)
-        if any(source["kind"] == "meeting" for source in imported):
+        meeting_import_count = sum(source["kind"] == "meeting" for source in imported)
+        if meeting_import_count:
+            self._record_pilot_usage("meeting_imported", count=meeting_import_count)
             self._sync_meeting_attention()
         return turn
 
@@ -2965,6 +3008,12 @@ class UIBackend:
             route_metadata=route_metadata,
             performance_metadata=performance_metadata,
         )
+        if not interrupted and reply:
+            self._record_pilot_usage(
+                "voice_turn_completed"
+                if response_started_at is not None
+                else "text_turn_completed"
+            )
         self.emitter.emit(
             "assistant_end",
             text=reply,
@@ -3425,6 +3474,9 @@ class UIBackend:
             self.store.connector_checkpoint(CONNECTOR_ID, self.current_workspace_id)
         )
         snapshot["express_connector"] = express_diagnostics
+        snapshot["pilot_metrics"] = self.store.pilot_metrics_summary(
+            platform="macos"
+        )
         snapshot["pilot_preflight"] = self._build_pilot_preflight(
             snapshot.get("pilot_metrics")
         )

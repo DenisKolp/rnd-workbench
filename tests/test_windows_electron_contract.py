@@ -147,7 +147,10 @@ def test_pilot_voice_metrics_are_visible_and_exported_via_trusted_save_dialog() 
     assert 'sendCommand("export_pilot_metrics"' in renderer
     assert "state.snapshot.pilot_metrics" in renderer
     assert 'id="pilotMetricsSummary"' in html
-    assert "без запросов, транскриптов и ответов" in html
+    assert 'id="pilotUsageSummary"' in html
+    assert 'id="pilotUsefulnessRating"' in html
+    assert 'sendCommand("set_pilot_feedback"' in renderer
+    assert "без запросов, транскриптов, документов и идентификаторов сессий" in html
 
 
 def test_dynamic_pilot_preflight_is_rendered_and_can_be_refreshed() -> None:

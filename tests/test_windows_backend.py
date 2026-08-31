@@ -410,6 +410,23 @@ def test_text_turn_uses_shared_store_and_json_event_contract(tmp_path) -> None:
     assert messages[-1]["content"] == "Готовый ответ"
     assert metadata["llm_route"]["provider_type"] == "local"
     assert metadata["spoken"] is False
+    usage = backend.store.pilot_usage_summary(platform="windows")
+    assert usage["text_turns"] == 1
+    assert usage["voice_turns"] == 0
+
+
+def test_windows_pilot_feedback_command_is_bounded_and_content_free(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)
+
+    backend.handle({"command": "set_pilot_feedback", "usefulness_rating": 5})
+
+    summary = backend.store.pilot_usage_summary(platform="windows")
+    assert summary["usefulness_rating"] == 5
+    assert summary["criteria"]["rating_at_least_4"] is True
+    assert any(event["type"] == "pilot_feedback_saved" for event in emitter.events)
+    with pytest.raises(ValueError, match="от 1 до 5"):
+        backend.handle({"command": "set_pilot_feedback", "usefulness_rating": 0})
 
 
 def test_windows_text_turn_is_gated_by_java_core_before_llm(tmp_path) -> None:

@@ -127,9 +127,13 @@ def test_macos_settings_expose_content_free_pilot_metrics_and_json_export() -> N
     assert 'pilotMetrics = (data["pilot_metrics"] as? [String: Any]) ?? [:]' in source
     assert 'Section("Качество и готовность пилота")' in source
     assert "controller.pilotMetricsSummaryLabel" in source
+    assert 'DisclosureGroup("Использование пилота"' in source
+    assert "controller.pilotUsageSummaryLabel" in source
+    assert '"command": "set_pilot_feedback"' in source
+    assert "controller.setPilotUsefulnessRating" in source
     assert "func exportPilotMetrics()" in source
     assert '"command": "export_pilot_metrics"' in source
-    assert "без запросов, транскриптов, ответов и идентификаторов сессий" in source
+    assert "без запросов, транскриптов, документов и идентификаторов сессий" in source
 
 
 def test_macos_settings_expose_dynamic_content_free_pilot_preflight() -> None:
@@ -388,7 +392,7 @@ def test_macos_build_links_global_input_frameworks_and_advances_build_number() -
     assert "--compress=zip-6" in build
     assert "verify_java_core_bridge.py" in build
     assert "--external-models-enabled" in build
-    assert "<string>11</string>" in plist
+    assert "<string>12</string>" in plist
 
 
 def test_macos_app_launches_bundled_java_policy_and_shows_safe_fallback() -> None:

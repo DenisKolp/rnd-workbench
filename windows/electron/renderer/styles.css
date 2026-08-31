@@ -239,6 +239,11 @@ body[data-mode="compact"][data-compact-view="chat"] .chat-card { min-height: 0; 
 .pilot-metrics-card p { margin: 0; color: var(--ink); font-size: 8px; line-height: 1.5; }
 .pilot-metrics-card small { color: var(--muted); font-size: 7px; line-height: 1.4; }
 .pilot-metrics-card .secondary-button { width: 100%; white-space: normal; line-height: 1.25; }
+.pilot-usage-details { padding: 7px 8px; border-radius: 9px; background: rgba(255, 255, 255, 0.72); }
+.pilot-usage-details summary { color: var(--blue); cursor: pointer; font-size: 8px; font-weight: 750; }
+.pilot-usage-details[open] summary { margin-bottom: 7px; }
+.pilot-rating-label { display: grid; gap: 4px; color: var(--muted); font-size: 8px; font-weight: 650; }
+.pilot-rating-label select { width: 100%; min-height: 30px; padding: 4px 7px; color: var(--ink); border: 1px solid var(--line); border-radius: 8px; background: var(--white); font-size: 9px; }
 .preflight-card { display: grid; gap: 7px; margin: 0; padding: 12px; border: 1px solid #d7e0ea; border-radius: 12px; background: #fbfcfe; }
 .preflight-card > p { margin: 0; color: var(--muted); font-size: 8px; line-height: 1.45; }
 .preflight-card .secondary-button { width: 100%; white-space: normal; line-height: 1.25; }

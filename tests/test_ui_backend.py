@@ -852,6 +852,24 @@ def test_silent_answer_exposes_unspoken_contract(capsys, tmp_path) -> None:
     answer = next(event for event in events if event["type"] == "assistant_end")
     assert answer["spoken"] is False
     assert answer["tts_error"] is None
+    usage = store.pilot_usage_summary(platform="macos")
+    assert usage["text_turns"] == 1
+    assert usage["voice_turns"] == 0
+
+
+def test_macos_pilot_feedback_command_is_bounded_and_content_free(capsys, tmp_path) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    backend = UIBackend(Config.defaults(), EventEmitter(), store)
+
+    backend.handle({"command": "set_pilot_feedback", "usefulness_rating": 4})
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    summary = store.pilot_usage_summary(platform="macos")
+    assert summary["usefulness_rating"] == 4
+    assert summary["criteria"]["rating_at_least_4"] is True
+    assert any(event["type"] == "pilot_feedback_saved" for event in events)
+    with pytest.raises(ValueError, match="от 1 до 5"):
+        backend.set_pilot_feedback({"usefulness_rating": 6})
 
 
 def test_tts_failure_keeps_full_text_and_completed_task(capsys, tmp_path) -> None:
@@ -1536,6 +1554,28 @@ def test_attention_question_uses_deterministic_local_answer_and_tts(
     assert played == [concise_speech_text(answer["text"])]
     assert answer["spoken_text"] == played[0]
     assert store.get_task(backend.current_task_id)["status"] == "done"
+    assert store.pilot_usage_summary(platform="macos")["text_turns"] == 1
+    snapshot = [event for event in events if event["type"] == "snapshot"][-1]["data"]
+    assert snapshot["pilot_metrics"]["usage"]["text_turns"] == 1
+
+
+def test_failed_deterministic_command_is_not_counted_as_completed_turn(
+    capsys,
+    tmp_path,
+) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    backend = UIBackend(Config.defaults(), EventEmitter(), store)
+    backend.current_task_id = None
+
+    backend._text_turn("добавь в план Согласовать результат", speak=False)
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert any(
+        event["type"] == "error" and "Сначала выберите задачу" in event["message"]
+        for event in events
+    )
+    assert not any(event["type"] == "assistant_end" for event in events)
+    assert store.pilot_usage_summary(platform="macos")["text_turns"] == 0
 
 
 def test_attention_tts_failure_is_nonfatal(capsys, tmp_path) -> None:

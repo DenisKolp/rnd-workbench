@@ -115,6 +115,75 @@ def test_pilot_metric_export_contains_aggregates_but_no_session_rows(tmp_path) -
     assert "session_id" not in serialized
 
 
+def test_pilot_usage_is_daily_content_free_and_measures_first_value(tmp_path) -> None:
+    store = make_store(tmp_path)
+
+    store.record_pilot_usage("macos", "app_session_started")
+    store.record_pilot_usage("macos", "voice_turn_completed")
+    store.record_pilot_usage("macos", "voice_turn_completed")
+    store.record_pilot_usage("macos", "text_turn_completed")
+    store.record_pilot_usage("macos", "dictation_completed")
+    store.record_pilot_usage("macos", "meeting_imported")
+    store.record_pilot_usage("macos", "meeting_briefing_prepared")
+    store.set_pilot_usefulness_rating("macos", 4)
+
+    summary = store.pilot_usage_summary(platform="macos")
+    rows = store._rows("SELECT * FROM pilot_daily_usage")
+    serialized_rows = json.dumps(rows, ensure_ascii=False)
+    assert not any(key.startswith("pilot_") for key in store.settings())
+
+    assert summary["privacy"] == "content_free_daily_aggregate"
+    assert summary["active_days"] == 1
+    assert summary["active_days_last_7"] == 1
+    assert summary["sessions"] == 1
+    assert summary["completed_turns"] == 3
+    assert summary["voice_turns"] == 2
+    assert summary["voice_turn_share"] == pytest.approx(2 / 3, abs=1e-6)
+    assert summary["dictations"] == 1
+    assert summary["meeting_imports"] == 1
+    assert summary["meeting_briefings"] == 1
+    assert summary["first_value_seconds"] is not None
+    assert summary["criteria"]["first_value_under_10_minutes"] is True
+    assert summary["criteria"]["rating_at_least_4"] is True
+    assert summary["usefulness_rating"] == 4
+    assert "task" not in serialized_rows
+    assert "session_id" not in serialized_rows
+    assert "prompt" not in serialized_rows
+    assert "source" not in serialized_rows
+
+
+def test_pilot_usage_rejects_free_form_events_and_feedback(tmp_path) -> None:
+    store = make_store(tmp_path)
+
+    with pytest.raises(ValueError, match="событие"):
+        store.record_pilot_usage("windows", "opened secret-project.docx")
+    with pytest.raises(ValueError, match="от 1 до 5"):
+        store.set_pilot_usefulness_rating("windows", 6)
+    with pytest.raises(ValueError, match="платформа"):
+        store.record_pilot_usage("private-hostname", "text_turn_completed")
+
+
+def test_pilot_export_includes_adoption_without_raw_days_or_timestamps(tmp_path) -> None:
+    store = make_store(tmp_path)
+    store.record_pilot_usage("windows", "app_session_started")
+    store.record_pilot_usage("windows", "text_turn_completed")
+    store.set_pilot_usefulness_rating("windows", 5)
+
+    destination = store.export_pilot_metrics(
+        tmp_path / "pilot-report",
+        platform="windows",
+    )
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["schema_version"] == 2
+    assert payload["usage"]["completed_turns"] == 1
+    assert payload["usage"]["usefulness_rating"] == 5
+    assert "pilot_daily_usage" not in serialized
+    assert "updated_at" not in serialized
+    assert "started_at" not in serialized
+
+
 def test_tasks_keep_separate_context_and_persist_messages(tmp_path) -> None:
     store = make_store(tmp_path)
     workspace = store.default_workspace_id()

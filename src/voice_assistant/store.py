@@ -18,7 +18,7 @@ from uuid import uuid4
 from .automation import next_run
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 PILOT_METRIC_UNITS = {
     "listen_ready_seconds": "seconds",
@@ -56,6 +56,29 @@ PILOT_ROUTES = {"local", "corporate", "external", "deterministic", "unknown"}
 PILOT_OUTCOMES = {"ok", "cancelled", "error", "ignored"}
 PILOT_METRIC_RETENTION_DAYS = 90
 PILOT_METRIC_MAX_ROWS = 20_000
+
+PILOT_USAGE_EVENTS = frozenset(
+    {
+        "app_session_started",
+        "voice_turn_completed",
+        "text_turn_completed",
+        "dictation_completed",
+        "meeting_imported",
+        "meeting_briefing_prepared",
+    }
+)
+PILOT_USAGE_USER_EVENTS = frozenset(PILOT_USAGE_EVENTS - {"app_session_started"})
+PILOT_USAGE_FIRST_VALUE_EVENTS = frozenset(
+    {
+        "voice_turn_completed",
+        "text_turn_completed",
+        "dictation_completed",
+        "meeting_imported",
+        "meeting_briefing_prepared",
+    }
+)
+PILOT_USAGE_RETENTION_DAYS = 90
+PILOT_USAGE_MAX_DAILY_COUNT = 1_000_000
 
 DATA_CLASSIFICATIONS = ("public", "internal", "confidential", "restricted")
 CLASSIFICATION_RANK = {
@@ -528,6 +551,30 @@ class AssistantStore:
         );
         CREATE INDEX IF NOT EXISTS pilot_metrics_time_idx
             ON pilot_metrics(created_at, platform, metric);
+        CREATE TABLE IF NOT EXISTS pilot_daily_usage (
+            day TEXT NOT NULL,
+            platform TEXT NOT NULL
+                CHECK(platform IN ('macos', 'windows', 'linux')),
+            event TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0 CHECK(count >= 0),
+            PRIMARY KEY(day, platform, event)
+        );
+        CREATE INDEX IF NOT EXISTS pilot_daily_usage_day_idx
+            ON pilot_daily_usage(day, platform);
+        CREATE TABLE IF NOT EXISTS pilot_usage_state (
+            platform TEXT PRIMARY KEY
+                CHECK(platform IN ('macos', 'windows', 'linux')),
+            started_at TEXT NOT NULL,
+            first_value_seconds REAL
+                CHECK(first_value_seconds IS NULL OR first_value_seconds >= 0)
+        );
+        CREATE TABLE IF NOT EXISTS pilot_feedback (
+            platform TEXT PRIMARY KEY
+                CHECK(platform IN ('macos', 'windows', 'linux')),
+            usefulness_rating INTEGER NOT NULL
+                CHECK(usefulness_rating BETWEEN 1 AND 5),
+            updated_at TEXT NOT NULL
+        );
         """
         with self.transaction() as connection:
             connection.executescript(schema)
@@ -4688,6 +4735,246 @@ class AssistantStore:
             return ordered[lower]
         return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
+    @staticmethod
+    def _pilot_platform(value: str) -> str:
+        platform = str(value).strip().casefold()
+        if platform not in PILOT_PLATFORMS:
+            raise ValueError("Неизвестная платформа пилота")
+        return platform
+
+    def record_pilot_usage(self, platform: str, event: str, *, count: int = 1) -> None:
+        """Increment one allowlisted daily product counter.
+
+        The table deliberately has no task, workspace, session, prompt, source,
+        model, file, or free-form metadata columns.  Product adoption can be
+        evaluated without reconstructing what a participant worked on.
+        """
+
+        normalized_platform = self._pilot_platform(platform)
+        normalized_event = str(event).strip().casefold()
+        if normalized_event not in PILOT_USAGE_EVENTS:
+            raise ValueError("Неизвестное событие использования пилота")
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 1 <= count <= 1_000
+        ):
+            raise ValueError("Счётчик использования должен быть от 1 до 1000")
+        now = datetime.now(UTC)
+        local_day = datetime.now().astimezone().date().isoformat()
+        cutoff_day = (
+            datetime.now().astimezone().date()
+            - timedelta(days=PILOT_USAGE_RETENTION_DAYS)
+        ).isoformat()
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO pilot_daily_usage(day, platform, event, count)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(day, platform, event) DO UPDATE SET
+                    count = MIN(pilot_daily_usage.count + excluded.count, ?)
+                """,
+                (
+                    local_day,
+                    normalized_platform,
+                    normalized_event,
+                    count,
+                    PILOT_USAGE_MAX_DAILY_COUNT,
+                ),
+            )
+            connection.execute(
+                "DELETE FROM pilot_daily_usage WHERE day < ?",
+                (cutoff_day,),
+            )
+            state_row = connection.execute(
+                """
+                SELECT started_at, first_value_seconds
+                FROM pilot_usage_state WHERE platform = ?
+                """,
+                (normalized_platform,),
+            ).fetchone()
+            if state_row is None:
+                started_at = now
+                connection.execute(
+                    """
+                    INSERT INTO pilot_usage_state(platform, started_at, first_value_seconds)
+                    VALUES (?, ?, NULL)
+                    """,
+                    (normalized_platform, now.isoformat(timespec="seconds")),
+                )
+            else:
+                try:
+                    started_at = datetime.fromisoformat(str(state_row[0]))
+                    if started_at.tzinfo is None:
+                        raise ValueError("timezone required")
+                except (TypeError, ValueError):
+                    started_at = now
+                    connection.execute(
+                        """
+                        UPDATE pilot_usage_state SET started_at = ?
+                        WHERE platform = ?
+                        """,
+                        (now.isoformat(timespec="seconds"), normalized_platform),
+                    )
+            if normalized_event in PILOT_USAGE_FIRST_VALUE_EVENTS:
+                first_value = state_row[1] if state_row is not None else None
+                if first_value is None:
+                    elapsed = max(0.0, min((now - started_at).total_seconds(), 31_536_000.0))
+                    connection.execute(
+                        """
+                        UPDATE pilot_usage_state SET first_value_seconds = ?
+                        WHERE platform = ?
+                        """,
+                        (round(elapsed, 3), normalized_platform),
+                    )
+
+    def set_pilot_usefulness_rating(self, platform: str, rating: int) -> None:
+        """Persist one current 1–5 rating without a comment or participant id."""
+
+        normalized_platform = self._pilot_platform(platform)
+        if isinstance(rating, bool) or not isinstance(rating, int) or not 1 <= rating <= 5:
+            raise ValueError("Оценка полезности должна быть целым числом от 1 до 5")
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO pilot_feedback(platform, usefulness_rating, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(platform) DO UPDATE SET
+                    usefulness_rating = excluded.usefulness_rating,
+                    updated_at = excluded.updated_at
+                """,
+                (normalized_platform, rating, utc_now()),
+            )
+
+    def pilot_usage_summary(
+        self,
+        *,
+        days: int = 28,
+        platform: str | None = None,
+    ) -> dict[str, Any]:
+        """Return content-free per-device adoption aggregates for the pilot."""
+
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 365:
+            raise ValueError("Окно использования должно быть от 1 до 365 дней")
+        normalized_platform = self._pilot_platform(platform) if platform is not None else None
+        today = datetime.now().astimezone().date()
+        cutoff_day = (today - timedelta(days=days - 1)).isoformat()
+        recent_cutoff = (today - timedelta(days=6)).isoformat()
+        parameters: list[Any] = [cutoff_day]
+        platform_clause = ""
+        if normalized_platform is not None:
+            platform_clause = " AND platform = ?"
+            parameters.append(normalized_platform)
+        rows = self._rows(
+            """
+            SELECT day, platform, event, count
+            FROM pilot_daily_usage
+            WHERE day >= ?
+            """
+            + platform_clause
+            + " ORDER BY day, platform, event",
+            parameters,
+        )
+        event_counts = {event: 0 for event in sorted(PILOT_USAGE_EVENTS)}
+        active_days: set[str] = set()
+        active_days_last_7: set[str] = set()
+        platforms: set[str] = set()
+        for row in rows:
+            event = str(row["event"])
+            count = int(row["count"])
+            if event in event_counts:
+                event_counts[event] += count
+            platforms.add(str(row["platform"]))
+            if event in PILOT_USAGE_USER_EVENTS and count > 0:
+                day = str(row["day"])
+                active_days.add(day)
+                if day >= recent_cutoff:
+                    active_days_last_7.add(day)
+
+        state_parameters: list[Any] = []
+        state_clause = ""
+        if normalized_platform is not None:
+            state_clause = " WHERE platform = ?"
+            state_parameters.append(normalized_platform)
+        first_value_rows = self._rows(
+            "SELECT platform, first_value_seconds FROM pilot_usage_state"
+            + state_clause,
+            state_parameters,
+        )
+        first_values: dict[str, float] = {}
+        for row in first_value_rows:
+            if row["first_value_seconds"] is None:
+                continue
+            first_platform = str(row["platform"])
+            try:
+                value = float(row["first_value_seconds"])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value) and value >= 0:
+                first_values[first_platform] = round(value, 3)
+
+        feedback_parameters: list[Any] = []
+        feedback_clause = ""
+        if normalized_platform is not None:
+            feedback_clause = " WHERE platform = ?"
+            feedback_parameters.append(normalized_platform)
+        feedback_rows = self._rows(
+            "SELECT platform, usefulness_rating FROM pilot_feedback"
+            + feedback_clause,
+            feedback_parameters,
+        )
+        ratings = {
+            str(row["platform"]): int(row["usefulness_rating"])
+            for row in feedback_rows
+        }
+        selected_first_value = (
+            first_values.get(normalized_platform)
+            if normalized_platform is not None
+            else next(iter(first_values.values())) if len(first_values) == 1 else None
+        )
+        selected_rating = (
+            ratings.get(normalized_platform)
+            if normalized_platform is not None
+            else next(iter(ratings.values())) if len(ratings) == 1 else None
+        )
+        voice_turns = event_counts["voice_turn_completed"]
+        text_turns = event_counts["text_turn_completed"]
+        completed_turns = voice_turns + text_turns
+        return {
+            "schema_version": 1,
+            "privacy": "content_free_daily_aggregate",
+            "window_days": days,
+            "platform_filter": normalized_platform,
+            "platforms": sorted(platforms),
+            "active_days": len(active_days),
+            "active_days_last_7": len(active_days_last_7),
+            "sessions": event_counts["app_session_started"],
+            "completed_turns": completed_turns,
+            "voice_turns": voice_turns,
+            "text_turns": text_turns,
+            "voice_turn_share": (
+                round(voice_turns / completed_turns, 6) if completed_turns else None
+            ),
+            "dictations": event_counts["dictation_completed"],
+            "meeting_imports": event_counts["meeting_imported"],
+            "meeting_briefings": event_counts["meeting_briefing_prepared"],
+            "first_value_seconds": selected_first_value,
+            "usefulness_rating": selected_rating,
+            "criteria": {
+                "active_this_week": bool(active_days_last_7),
+                "three_active_days_last_7": len(active_days_last_7) >= 3,
+                "first_value_under_10_minutes": (
+                    selected_first_value <= 600.0
+                    if selected_first_value is not None
+                    else None
+                ),
+                "rating_at_least_4": (
+                    selected_rating >= 4 if selected_rating is not None else None
+                ),
+            },
+            "events": event_counts,
+        }
+
     def pilot_metrics_summary(
         self,
         *,
@@ -4767,7 +5054,7 @@ class AssistantStore:
                 }
             metrics[metric] = statistics
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "privacy": "content_free_aggregate",
             "generated_at": utc_now(),
             "window_days": days,
@@ -4777,6 +5064,10 @@ class AssistantStore:
             "route_counts": route_counts,
             "outcome_counts": outcome_counts,
             "metrics": metrics,
+            "usage": self.pilot_usage_summary(
+                days=28,
+                platform=normalized_platform,
+            ),
         }
 
     def export_pilot_metrics(
