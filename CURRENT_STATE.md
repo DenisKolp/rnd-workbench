@@ -37,8 +37,10 @@ RnD Workbench — локальный по умолчанию персональ�
   состояниями одного `BrowserWindow`; WebAudio capture/playback, Faster-Whisper,
   один короткий OmniVoice-Fast TTS-запрос и barge-in проходят source contracts.
   Готовые транскрипты, локальные аудиофайлы и пакеты eXpress импортируются;
-  capability голоса остаётся выключенной без локальных runtime, а Windows
-  hardware QA и подписанная portable-сборка ещё не выполнены.
+  Windows CI собирает unsigned text-first portable package и запускает packaged
+  backend smoke-test. Capability голоса остаётся выключенной без локальных
+  runtime; Windows voice hardware QA и подписанная пилотная сборка ещё не
+  выполнены.
 - Java 21 `core-java` содержит общие политики, executable stdio JSONL 1.0 и
   persistent SQLite idempotency journal; 42 JUnit проходят, но desktop-адаптеры
   ещё не запускают этот процесс.
@@ -82,6 +84,7 @@ PYTHONPATH=src .venv/bin/python -m pytest
 контрольную точку.
 
 Полный Python/UI-набор содержит 362 теста и проходит; в него входят 20 macOS и
-52 Windows contract-теста. Отдельные 42 JUnit-теста `core-java` проходят на JDK
-21/Gradle 9.7.1. Windows CI, jlink packaging и desktop-интеграция всё равно
-обязательны перед включением Java core в пилотную поставку.
+52 Windows contract-теста. Отдельные 42 JUnit-теста `core-java` проходят локально
+и в Linux CI на JDK 21/Gradle 9.7.1. Windows JDK job, jlink packaging и
+desktop-интеграция всё равно обязательны перед включением Java core в пилотную
+поставку.

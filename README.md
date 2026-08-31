@@ -16,9 +16,11 @@ RnD Workbench — независимый исследовательский пр
 
 Проверенная референсная голосовая сборка сейчас работает на macOS Apple Silicon.
 Windows-клиент реализован на Electron; его source vertical уже включает
-WebAudio, Faster-Whisper, OmniVoice-Fast и перебивание, но portable-сборка и
-акустический тракт ещё должны пройти Windows CI и hardware QA. Этот статус не
-выдаётся за готовую пилотную поставку.
+WebAudio, Faster-Whisper, OmniVoice-Fast и перебивание. Windows CI собирает
+unsigned text-first portable package и запускает packaged backend smoke-test;
+предоставление локального voice runtime, акустический hardware QA и подпись
+установщика ещё не выполнены. Этот статус не выдаётся за готовую пилотную
+поставку.
 
 Референсный локальный голосовой контур macOS:
 
@@ -73,8 +75,9 @@ TTS остаются на устройстве; текстовый inference м�
   добавил бы сериализацию в аудиотракт.
 - Java core имеет executable stdio JSONL 1.0, строгие схемы и атомарный
   SQLite-журнал идемпотентности. Он пока не подключён desktop-адаптерами; его 42
-  JUnit-тестов проходят на JDK 21/Gradle 9.7.1. Windows CI, jlink packaging и
-  межъязыковые golden-тесты обязательны перед включением в поставку.
+  JUnit-теста проходят локально и в Linux CI на JDK 21/Gradle 9.7.1. Отдельный
+  Windows JDK job, jlink packaging и межъязыковые golden-тесты обязательны перед
+  включением Java core в поставку.
 
 Точное решение и границы миграции описаны в
 [`docs/ADR-0001-CROSS_PLATFORM_JAVA_CORE.md`](docs/ADR-0001-CROSS_PLATFORM_JAVA_CORE.md),

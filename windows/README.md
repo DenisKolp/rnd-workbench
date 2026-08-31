@@ -31,7 +31,7 @@ Faster-Whisper weights и loopback OmniVoice-Fast server Python-мост чес�
 | TTS, единый голос, перебивание | Готово в исходниках | Один короткий OmniVoice-Fast запрос с фиксированными profile/seed, PCM stream, limiter, 12-мс fade и barge-in; акустические SLO не измерены |
 | Импорт встреч eXpress | Готово в исходниках | Локальный Faster-Whisper обрабатывает выбранный аудиофайл; также доступны готовый транскрипт и пакет с provenance. Нужен Windows hardware QA |
 | Jira / Kaiten / Confluence / почта / календарь | Не подключено | Нужны корпоративные API, OAuth/SSO и тестовые стенды |
-| Подписанный установщик | Не проверено | Скрипт создаёт portable Electron artifact, но подпись и Windows QA требуют Windows CI/машину |
+| Подписанный установщик | Частично | Windows CI создаёт unsigned text-first portable artifact и smoke-тестирует packaged backend; подпись, voice runtime и hardware QA не выполнены |
 
 Статусы «в исходниках» означают, что код и автоматические контрактные тесты
 готовы в репозитории. Это не заменяет запуск, подпись и UX-проверку на реальных
@@ -118,9 +118,11 @@ powershell -ExecutionPolicy Bypass -File windows\build.ps1 -WithVoice
 Для воспроизводимости сборки скрипт использует `npm ci` и committed
 `package-lock.json`, а не переразрешает зависимости перед упаковкой.
 
-Результат ожидается в `windows\dist\electron`. Этот шаг пока не выполнялся на
-Windows CI в данном репозитории, поэтому portable artifact не считается
-проверенной пилотной поставкой до smoke-test на чистой Windows 11.
+Результат создаётся в `windows\dist\electron`. GitHub Actions выполняет этот шаг
+на Windows runner, запускает packaged backend smoke-test и сохраняет unsigned
+text-first QA artifact на семь дней. Он не включает подготовленные voice runtime
+и веса и не считается пилотной поставкой до подписи, smoke-test на чистой
+Windows 11 и hardware/acoustic QA.
 
 ## Следующий обязательный этап голоса
 
