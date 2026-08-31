@@ -1,0 +1,134 @@
+# RnD Workbench — Windows Electron pilot
+
+Версия Windows-компонента — **0.1.0-pilot**; она входит в общий продуктовый
+milestone **0.9.1**, но не обозначает готовую Windows-поставку.
+
+Это минимальная честная Windows-ветка для пилота на 30 сотрудниках. Клиент
+реализован **только на Electron**. Компактный голосовой виджет и полноразмерное
+рабочее окно — два состояния одного `BrowserWindow`; переход не создаёт второй
+экземпляр интерфейса или backend.
+
+Windows-ветка содержит текстовый рабочий цикл, локальное хранение задач,
+маршрутизацию между локальной и корпоративной языковой моделью и полный
+capability-gated voice vertical в исходниках. Без заранее подготовленных
+Faster-Whisper weights и loopback OmniVoice-Fast server Python-мост честно
+сообщает `voice_available=false`; Windows-сборка и акустический тракт пока не
+проверены на реальном Windows-устройстве.
+
+## Матрица готовности
+
+| Возможность | Статус Windows pilot | Что реально работает |
+|---|---:|---|
+| Electron compact ↔ full | Готово в исходниках | Один `BrowserWindow` меняет bounds, always-on-top и layout |
+| Защита от второго экземпляра | Готово в исходниках | `requestSingleInstanceLock()` активирует существующее окно |
+| Текстовый чат и потоковый ответ | Готово в исходниках | JSONL frontend ↔ core, OpenAI-compatible SSE |
+| Локальная модель | Готово в исходниках | Loopback endpoint `localhost` / `127.0.0.1`, например Ollama или LM Studio |
+| Корпоративная модель | Готово в исходниках | Удалённый OpenAI-compatible HTTPS endpoint; ключ только в памяти процесса |
+| Рабочие пространства и задачи | Частично | SQLite-история и задачи работают; полный macOS-набор экранов не перенесён |
+| Политика данных | Готово для чата | Local допускает локальный контекст; corporate ограничен классификацией и ручным контекстом |
+| Голосовой ввод, STT | Готово в исходниках | Electron WebAudio → mono PCM16/16 кГц, adaptive VAD/pre-roll и Faster-Whisper; нужен Windows hardware QA |
+| Глобальная диктовка | Готово в исходниках | Удержание F8 записывает речь, отпускание вставляет текст через UI Automation/SendInput; secure fields отклоняются, нужен Windows hardware QA |
+| TTS, единый голос, перебивание | Готово в исходниках | Один короткий OmniVoice-Fast запрос с фиксированными profile/seed, PCM stream, limiter, 12-мс fade и barge-in; акустические SLO не измерены |
+| Импорт встреч eXpress | Готово в исходниках | Локальный Faster-Whisper обрабатывает выбранный аудиофайл; также доступны готовый транскрипт и пакет с provenance. Нужен Windows hardware QA |
+| Jira / Kaiten / Confluence / почта / календарь | Не подключено | Нужны корпоративные API, OAuth/SSO и тестовые стенды |
+| Подписанный установщик | Не проверено | Скрипт создаёт portable Electron artifact, но подпись и Windows QA требуют Windows CI/машину |
+
+Статусы «в исходниках» означают, что код и автоматические контрактные тесты
+готовы в репозитории. Это не заменяет запуск, подпись и UX-проверку на реальных
+Windows 11 устройствах пилотной группы.
+
+## Архитектура
+
+```text
+Electron renderer (без Node.js)
+        │ безопасный preload / IPC
+Electron main process — единственный BrowserWindow
+        │ JSON Lines через stdin/stdout
+Windows core service
+        ├─ Python bridge: chat + STT/OmniVoice adapters
+        └─ Java 21 core: отдельный IPC 1.0, пока не подключён оболочкой
+```
+
+Renderer не получает Node.js API и не открывает внешние страницы. В main
+process включены `contextIsolation`, `sandbox`, `nodeIntegration=false` и CSP.
+Диагностика `stderr` core не копируется в интерфейс, чтобы случайно не показать
+локальные пути или тело ответа провайдера.
+
+JSONL остаётся целевой границей. Переменная
+`RND_WORKBENCH_CORE_EXECUTABLE` позволяет в разработке явно подставить другой
+исполняемый core. В текущей packaged-сборке Electron использует только
+`resources/backend/rnd-workbench-backend.exe`. Java core уже имеет executable
+stdio JSONL 1.0, строгие схемы и persistent action journal, но desktop adapter
+ещё не подключает этот процесс; текущий voice path не выдаёт его за активный.
+
+## Запуск из репозитория на Windows
+
+Требуются Node.js LTS и Python 3.11+. Windows-окружение намеренно не устанавливает
+root-пакет с Apple-only MLX-зависимостями. Для text-first сборки используйте
+`windows/requirements-build.txt`, для voice runtime —
+`windows/requirements-voice.txt`.
+
+Electron зафиксирован на версии 44.0.0, electron-builder — 26.15.3; committed
+`package-lock.json` проверен `npm audit` без известных уязвимостей.
+
+```powershell
+cd windows\electron
+npm install
+npm start
+```
+
+Или запустите `windows\run-rnd-workbench.cmd` после `npm install`.
+
+Чтобы capability голоса стала доступна, до запуска задайте путь к заранее
+размещённой модели Faster-Whisper и адрес уже работающего локального
+OmniVoice-Fast server:
+
+```powershell
+$env:RND_WORKBENCH_WINDOWS_WHISPER_MODEL = "C:\models\whisper-large-v3-turbo"
+$env:RND_WORKBENCH_WINDOWS_OMNIVOICE_URL = "http://127.0.0.1:8080"
+$env:RND_WORKBENCH_WINDOWS_STT_DEVICE = "cpu" # либо cuda в подготовленном окружении
+```
+
+Приложение не скачивает веса и не запускает неподписанный server скрытно. В
+диагностике отдельно видны готовность capture, STT и TTS. Полный ответ остаётся
+в чате; голосом воспроизводится одна законченная реплика до 220 символов.
+
+В настройках выберите один из маршрутов:
+
+- Local: `http://127.0.0.1:11434/v1`, идентификатор модели из Ollama/LM Studio,
+  API-ключ не нужен.
+- Corporate: HTTPS endpoint, модель и выданный пользователю API-ключ. Ключ
+  потребуется ввести заново после перезапуска.
+
+## Portable-сборка
+
+Скрипт не устанавливает PyInstaller автоматически. Используйте отдельное
+build-окружение, где Python, PyInstaller, Node.js и npm уже установлены:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\build.ps1
+```
+
+Voice-вариант собирается только после тех же явных preflight-проверок:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\build.ps1 -WithVoice
+```
+
+Для воспроизводимости сборки скрипт использует `npm ci` и committed
+`package-lock.json`, а не переразрешает зависимости перед упаковкой.
+
+Результат ожидается в `windows\dist\electron`. Этот шаг пока не выполнялся на
+Windows CI в данном репозитории, поэтому portable artifact не считается
+проверенной пилотной поставкой до smoke-test на чистой Windows 11.
+
+## Следующий обязательный этап голоса
+
+Source-контракт уже реализует `capability`, `state`, `metric`,
+`dictation_ready`, `assistant_delta`, `assistant_end`, `speech_error`, PCM audio
+events и `session_stopped`. Автотесты проверяют порядок и границы сообщений, а
+цифровая диагностика считает peak/clipping. Это ещё не аппаратная валидация:
+перед пилотом нужны сборка и измерения end-of-speech → transcript, first audio,
+speaker consistency, реального cancel → mute и barge-in на нескольких моделях
+Windows-ноутбуков и гарнитур. Portable artifact также должен пройти подпись и
+smoke-test на чистой Windows 10/11.

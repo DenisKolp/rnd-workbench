@@ -1,0 +1,191 @@
+diff --git a/src/pipeline-tts.cpp b/src/pipeline-tts.cpp
+index 42c8ab8..9464976 100644
+--- a/src/pipeline-tts.cpp
++++ b/src/pipeline-tts.cpp
+@@ -1082,14 +1082,27 @@ static ov_status tts_synthesize_long_stream_internal(PipelineTTS *         pt,
+         ov_log(OV_LOG_INFO, "[TTS-Stream] voice clone scale %.4f (ref_rms %.4f)", volume_scale, ref_rms);
+     }
+
+-    // Pipeline stages: cross fade (0.3s), silence remove (mid=500, lead=100,
+-    // trail=100, -50 dBFS), volume scale, fade and pad (fade=0.1, pad=0.1).
++    // Desktop realtime profile keeps click protection while avoiding the
++    // perceptible 100 ms zero gap that the upstream 0.3 s crossfader inserts
++    // between decoder chunks. Set OMNIVOICE_STREAM_POSTPROC_PROFILE=upstream
++    // to restore the original 0.3 s crossfade and 0.1 s edge fade/pad.
++    const char * postproc_profile = getenv("OMNIVOICE_STREAM_POSTPROC_PROFILE");
++    const bool   upstream_postproc =
++        postproc_profile != nullptr && std::string(postproc_profile) == "upstream";
++    const double crossfade_sec = upstream_postproc ? 0.3 : 0.06;
++    const double edge_sec      = upstream_postproc ? 0.1 : 0.02;
++
++    // Pipeline stages: cross fade, silence remove (mid=500, lead=100,
++    // trail=100, -50 dBFS), volume scale, fade and pad.
+     crossfader_stream      cf;
+     silence_remover_stream sr_stage;
+     fade_pad_stream        fp;
+-    cf.init(sr, 0.3);
++    cf.init(sr, crossfade_sec);
+     sr_stage.init(sr, 500, 100, 100, -50.0);
+-    fp.init(sr, 0.1, 0.1);
++    fp.init(sr, edge_sec, edge_sec);
++    ov_log(OV_LOG_INFO,
++           "[TTS-Stream] postproc profile=%s crossfade=%.3fs edge=%.3fs",
++           upstream_postproc ? "upstream" : "desktop-realtime", crossfade_sec, edge_sec);
+
+     bool aborted = false;
+
+diff --git a/src/tts-server.h b/src/tts-server.h
+index 40ae467..44a2dc3 100644
+--- a/src/tts-server.h
++++ b/src/tts-server.h
+@@ -42,6 +42,10 @@ struct tts_request {
+     // random seed per request, matching the CLI convention; anything
+     // else forwards verbatim for reproducible output.
+     int64_t seed;
++
++    // Runtime-only cooperative cancellation. The HTTP handler fills this
++    // after parsing; it is never part of the wire format.
++    std::function<bool()> cancelled;
+ };
+
+ // The adapter pushes mono f32 24 kHz audio here. Returns false to abort the
+@@ -56,7 +60,9 @@ struct tts_backend {
+     // Run synthesis. When the request streams, the adapter routes the ABI
+     // on_chunk to sink ; otherwise it pushes the whole buffer once. Returns
+     // the ABI status (0 on success), and fills err with the ABI message on
+-    // failure. The shared layer maps the status to an HTTP code.
++    // failure. The shared layer maps the status to an HTTP code before a WAV
++    // response starts, or terminates an already-started PCM response as
++    // incomplete so streaming clients cannot mistake failure for success.
+     std::function<int(const tts_request & req, const tts_sink & sink, std::string & err)> synthesize;
+ };
+
+@@ -184,6 +190,7 @@ static void tts_handle_speech(const tts_backend & be, const httplib::Request & h
+     }
+
+     if (req.format == "wav") {
++        req.cancelled = http_req.is_connection_closed;
+         // One-shot : collect the whole utterance, then emit a RIFF file.
+         std::vector<float> buf;
+         tts_sink           sink = [&buf](const float * s, int n) {
+@@ -212,16 +219,36 @@ static void tts_handle_speech(const tts_backend & be, const httplib::Request & h
+     // frees the GPU instead of finishing a stream nobody reads.
+     res.set_header("Cache-Control", "no-cache");
+     res.set_header("X-Accel-Buffering", "no");
+-    res.set_chunked_content_provider("audio/pcm", [&be, req](size_t, httplib::DataSink & sink) mutable -> bool {
++    const auto connection_closed = http_req.is_connection_closed;
++    res.set_chunked_content_provider("audio/pcm", [&be, req, connection_closed](size_t, httplib::DataSink & sink) mutable -> bool {
++        req.cancelled = [&sink, connection_closed]() {
++            if (connection_closed && connection_closed()) {
++                return true;
++            }
++            return sink.is_writable && !sink.is_writable();
++        };
+         tts_sink push = [&sink](const float * s, int n) {
+             std::string bytes;
+             tts_append_s16le(bytes, s, n);
+             return sink.write(bytes.data(), bytes.size());
+         };
+         std::string synth_err;
++        int         rc;
+         {
+             std::lock_guard<std::mutex> lock(g_synth_mutex);
+-            be.synthesize(req, push, synth_err);
++            rc = be.synthesize(req, push, synth_err);
++        }
++        if (rc != 0) {
++            // HTTP headers have already been sent for a chunked response, so
++            // its status can no longer be changed from 200.  Do not emit the
++            // terminating zero-size chunk: returning false closes an
++            // incomplete response and lets clients distinguish synthesis
++            // failure from a successful (possibly empty) PCM stream.
++            if (!sink.is_writable || sink.is_writable()) {
++                fprintf(stderr, "[Server] synthesis failed: %s\n",
++                        synth_err.empty() ? "unknown error" : synth_err.c_str());
++            }
++            return false;
+         }
+         sink.done();
+         return true;
+diff --git a/tools/tts-server.cpp b/tools/tts-server.cpp
+index 789520a..7dfa4e8 100644
+--- a/tools/tts-server.cpp
++++ b/tools/tts-server.cpp
+@@ -27,6 +27,9 @@ static void print_usage(const char * prog) {
+             "  --host <ip>             Listen address (default: 127.0.0.1)\n"
+             "  --port <n>              Listen port (default: 8080)\n"
+             "  --lang <str>            Language label (default 'None')\n"
++            "  --steps <n>             MaskGIT decode steps (default: 32)\n"
++            "  --chunk-duration <sec>  Streaming chunk duration (default: 15.0)\n"
++            "  --chunk-threshold <sec> Enable chunking above duration (default: 30.0)\n"
+             "  --no-fa                 Disable flash attention\n"
+             "  --clamp-fp16            Clamp hidden states to FP16 range\n",
+             prog);
+@@ -46,6 +49,9 @@ int main(int argc, char ** argv) {
+     server_config cfg;
+     bool          use_fa     = true;
+     bool          clamp_fp16 = false;
++    int           steps      = 32;
++    float         chunk_duration_sec  = 15.0f;
++    float         chunk_threshold_sec = 30.0f;
+
+     for (int i = 1; i < argc; i++) {
+         const char * arg = argv[i];
+@@ -59,6 +65,12 @@ int main(int argc, char ** argv) {
+             cfg.port = std::atoi(argv[++i]);
+         } else if (!std::strcmp(arg, "--lang") && i + 1 < argc) {
+             lang = argv[++i];
++        } else if (!std::strcmp(arg, "--steps") && i + 1 < argc) {
++            steps = std::atoi(argv[++i]);
++        } else if (!std::strcmp(arg, "--chunk-duration") && i + 1 < argc) {
++            chunk_duration_sec = static_cast<float>(std::atof(argv[++i]));
++        } else if (!std::strcmp(arg, "--chunk-threshold") && i + 1 < argc) {
++            chunk_threshold_sec = static_cast<float>(std::atof(argv[++i]));
+         } else if (!std::strcmp(arg, "--no-fa")) {
+             use_fa = false;
+         } else if (!std::strcmp(arg, "--clamp-fp16")) {
+@@ -77,6 +89,10 @@ int main(int argc, char ** argv) {
+         print_usage(argv[0]);
+         return 1;
+     }
++    if (steps < 1 || chunk_duration_sec <= 0.0f || chunk_threshold_sec < 0.0f) {
++        fprintf(stderr, "[CLI] ERROR: invalid streaming parameters\n");
++        return 1;
++    }
+
+     struct ov_init_params iparams;
+     ov_init_default_params(&iparams);
+@@ -99,11 +115,15 @@ int main(int argc, char ** argv) {
+     // the shared sink, which either streams to the socket (pcm) or fills a
+     // one-shot buffer (wav). OmniVoice streams at chunk_duration_sec
+     // granularity, the same path either way.
+-    be.synthesize = [ov, &lang](const tts_request & req, const tts_sink & sink, std::string & err) -> int {
++    be.synthesize = [ov, &lang, steps, chunk_duration_sec, chunk_threshold_sec](
++                        const tts_request & req, const tts_sink & sink, std::string & err) -> int {
+         struct ov_tts_params p;
+         ov_tts_default_params(&p);
+         p.text = req.input.c_str();
+         p.lang = lang.c_str();
++        p.mg_num_step = steps;
++        p.chunk_duration_sec = chunk_duration_sec;
++        p.chunk_threshold_sec = chunk_threshold_sec;
+         if (!req.instructions.empty()) {
+             p.instruct = req.instructions.c_str();
+         }
+@@ -120,6 +140,16 @@ int main(int argc, char ** argv) {
+         };
+         p.on_chunk_user_data = (void *) sink_ptr;
+
++        // Observe a barge-in connection close before the next PCM write. The
++        // core polls this callback between internal chunks and releases the
++        // shared GPU context without finishing an abandoned utterance.
++        const tts_request * request_ptr = &req;
++        p.cancel = [](void * u) -> bool {
++            const auto * request = static_cast<const tts_request *>(u);
++            return request->cancelled && request->cancelled();
++        };
++        p.cancel_user_data = (void *) request_ptr;
++
+         struct ov_audio out = {};
+         enum ov_status  rc  = ov_synthesize(ov, &p, &out);
+         ov_audio_free(&out);

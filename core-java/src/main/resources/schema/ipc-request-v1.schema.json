@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rnd-workbench.local/schema/ipc-request-v1.schema.json",
+  "title": "RnD Workbench Core IPC request 1.0",
+  "oneOf": [
+    { "$ref": "#/$defs/healthRequest" },
+    { "$ref": "#/$defs/routeRequest" },
+    { "$ref": "#/$defs/meetingPackagePlanRequest" },
+    { "$ref": "#/$defs/claimRequest" },
+    { "$ref": "#/$defs/completeRequest" }
+  ],
+  "$defs": {
+    "correlationId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "healthRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "health.check" },
+        "correlationId": { "$ref": "#/$defs/correlationId" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 0
+        }
+      }
+    },
+    "routeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "route.decide" },
+        "correlationId": { "$ref": "#/$defs/correlationId" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "classification",
+            "preference",
+            "availableRoutes",
+            "corporateScopeAuthorized",
+            "explicitExternalConsent"
+          ],
+          "properties": {
+            "classification": {
+              "enum": [
+                "PUBLIC",
+                "PERSONAL",
+                "CORPORATE_INTERNAL",
+                "CONFIDENTIAL",
+                "RESTRICTED"
+              ]
+            },
+            "preference": {
+              "enum": ["AUTO", "LOCAL", "CORPORATE", "EXTERNAL"]
+            },
+            "availableRoutes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["local", "corporate", "external"],
+              "properties": {
+                "local": { "type": "boolean" },
+                "corporate": { "type": "boolean" },
+                "external": { "type": "boolean" }
+              }
+            },
+            "corporateScopeAuthorized": { "type": "boolean" },
+            "explicitExternalConsent": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "meetingPackagePart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "relativePath", "title", "mediaType", "sha256", "sizeBytes"],
+      "properties": {
+        "role": { "enum": ["TRANSCRIPT", "DESCRIPTION", "ATTACHMENT"] },
+        "relativePath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^(?![/\\\\])(?!.*(?:^|/)\\.\\.?/)(?!.*\\\\).+$"
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "mediaType": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.+-]{0,63}/[a-z0-9][a-z0-9.+-]{0,63}$"
+        },
+        "sha256": { "$ref": "#/$defs/fingerprint" },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144000
+        }
+      }
+    },
+    "connectorCheckpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliveryMode"],
+      "anyOf": [
+        {
+          "required": ["cursor"],
+          "properties": { "cursor": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "required": ["watermark"],
+          "properties": { "watermark": { "type": "string", "minLength": 1 } }
+        }
+      ],
+      "properties": {
+        "deliveryMode": { "enum": ["POLLING", "WEBHOOK"] },
+        "cursor": { "type": ["string", "null"], "minLength": 1, "maxLength": 512 },
+        "watermark": { "type": ["string", "null"], "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "meetingPackagePlanRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "meeting.package.plan" },
+        "correlationId": { "$ref": "#/$defs/correlationId" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "sourceSystem",
+            "importMode",
+            "packageId",
+            "title",
+            "occurredAt",
+            "organizer",
+            "classification",
+            "participants",
+            "parts",
+            "metadata"
+          ],
+          "properties": {
+            "schemaVersion": { "const": "1.0" },
+            "sourceSystem": { "const": "synapse" },
+            "importMode": { "const": "LOCAL_PACKAGE_IMPORT" },
+            "packageId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$"
+            },
+            "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+            "occurredAt": {
+              "type": ["string", "null"],
+              "maxLength": 64
+            },
+            "organizer": {
+              "type": ["string", "null"],
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "classification": {
+              "enum": ["public", "internal", "confidential", "restricted"]
+            },
+            "participants": {
+              "type": "array",
+              "maxItems": 200,
+              "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+            },
+            "connectorCheckpoint": { "$ref": "#/$defs/connectorCheckpoint" },
+            "parts": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 34,
+              "items": { "$ref": "#/$defs/meetingPackagePart" }
+            },
+            "metadata": {
+              "type": "object",
+              "maxProperties": 64,
+              "propertyNames": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            }
+          }
+        }
+      }
+    },
+    "claimRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "action.claim" },
+        "correlationId": { "$ref": "#/$defs/correlationId" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["idempotencyKey", "requestFingerprint"],
+          "properties": {
+            "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" },
+            "requestFingerprint": { "$ref": "#/$defs/fingerprint" }
+          }
+        }
+      }
+    },
+    "completeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "action.complete" },
+        "correlationId": { "$ref": "#/$defs/correlationId" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "idempotencyKey",
+            "requestFingerprint",
+            "claimToken",
+            "outcome",
+            "resultCode",
+            "completedAt"
+          ],
+          "properties": {
+            "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" },
+            "requestFingerprint": { "$ref": "#/$defs/fingerprint" },
+            "claimToken": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "outcome": { "enum": ["SUCCESS", "FAILURE"] },
+            "resultCode": {
+              "type": "string",
+              "pattern": "^[A-Z0-9][A-Z0-9._:-]{0,127}$"
+            },
+            "externalReference": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$"
+            },
+            "completedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,320 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rnd-workbench.local/schema/ipc-response-v1.schema.json",
+  "title": "RnD Workbench Core IPC response 1.0",
+  "oneOf": [
+    { "$ref": "#/$defs/errorResponse" },
+    { "$ref": "#/$defs/healthResponse" },
+    { "$ref": "#/$defs/routeResponse" },
+    { "$ref": "#/$defs/meetingPackagePlanResponse" },
+    { "$ref": "#/$defs/claimResponse" },
+    { "$ref": "#/$defs/completeResponse" }
+  ],
+  "$defs": {
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "baseSuccessProperties": {
+      "version": { "const": "1.0" },
+      "correlationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+      },
+      "ok": { "const": true }
+    },
+    "executionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "resultCode", "completedAt"],
+      "properties": {
+        "outcome": { "enum": ["SUCCESS", "FAILURE"] },
+        "resultCode": {
+          "type": "string",
+          "pattern": "^[A-Z0-9][A-Z0-9._:-]{0,127}$"
+        },
+        "externalReference": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$"
+        },
+        "completedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "errorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "ok", "error"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "error" },
+        "correlationId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "ok": { "const": false },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": {
+              "enum": [
+                "INVALID_JSON",
+                "INVALID_ENVELOPE",
+                "UNSUPPORTED_VERSION",
+                "UNSUPPORTED_TYPE",
+                "INVALID_PAYLOAD",
+                "MESSAGE_TOO_LARGE",
+                "JOURNAL_UNAVAILABLE",
+                "INTERNAL_ERROR"
+              ]
+            },
+            "message": { "type": "string", "maxLength": 160 }
+          }
+        }
+      }
+    },
+    "healthResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "ok", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "health.status" },
+        "correlationId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "ok": { "const": true },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "protocolVersion"],
+          "properties": {
+            "status": { "const": "ready" },
+            "protocolVersion": { "const": "1.0" }
+          }
+        }
+      }
+    },
+    "routeResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "ok", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "route.decision" },
+        "correlationId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "ok": { "const": true },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "route", "reason", "localFallbackBeforeFirstOutput"],
+              "properties": {
+                "status": { "const": "SELECTED" },
+                "route": { "enum": ["LOCAL", "CORPORATE", "EXTERNAL"] },
+                "reason": {
+                  "enum": ["LOCAL_SELECTED", "CORPORATE_SELECTED", "EXTERNAL_SELECTED"]
+                },
+                "localFallbackBeforeFirstOutput": { "type": "boolean" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "reason", "localFallbackBeforeFirstOutput"],
+              "properties": {
+                "status": { "enum": ["BLOCKED", "UNAVAILABLE"] },
+                "reason": {
+                  "enum": [
+                    "LOCAL_UNAVAILABLE",
+                    "CORPORATE_UNAVAILABLE",
+                    "EXTERNAL_UNAVAILABLE",
+                    "CORPORATE_SCOPE_NOT_AUTHORIZED",
+                    "CLASSIFICATION_BLOCKS_CORPORATE",
+                    "EXTERNAL_DISABLED_FOR_PILOT",
+                    "CLASSIFICATION_BLOCKS_EXTERNAL",
+                    "EXTERNAL_CONSENT_REQUIRED",
+                    "NO_PERMITTED_ROUTE"
+                  ]
+                },
+                "localFallbackBeforeFirstOutput": { "const": false }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "meetingPackagePlanResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "ok", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "meeting.package.plan.result" },
+        "correlationId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "ok": { "const": true },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "packageId",
+            "packageFingerprint",
+            "fingerprintProfile",
+            "importMode",
+            "packageImportAvailable",
+            "corporateApiConnected",
+            "realIntegration",
+            "writeBackAvailable",
+            "liveConnectorAvailable",
+            "checkpointAccepted",
+            "supportedDeliveryModes",
+            "reasonCode",
+            "followUpCapabilities"
+          ],
+          "properties": {
+            "schemaVersion": { "const": "1.0" },
+            "packageId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$"
+            },
+            "packageFingerprint": { "$ref": "#/$defs/fingerprint" },
+            "fingerprintProfile": {
+              "const": "synapse-meeting-package-fingerprint-v2"
+            },
+            "importMode": { "const": "LOCAL_PACKAGE_IMPORT" },
+            "packageImportAvailable": { "const": true },
+            "corporateApiConnected": { "const": false },
+            "realIntegration": { "const": false },
+            "writeBackAvailable": { "const": false },
+            "liveConnectorAvailable": { "const": false },
+            "checkpointAccepted": { "type": "boolean" },
+            "supportedDeliveryModes": {
+              "type": "array",
+              "prefixItems": [
+                { "const": "POLLING" },
+                { "const": "WEBHOOK" }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "reasonCode": { "const": "CORPORATE_API_NOT_CONNECTED" },
+            "followUpCapabilities": {
+              "type": "array",
+              "minItems": 6,
+              "maxItems": 6,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "availability", "effect"],
+                "properties": {
+                  "id": {
+                    "enum": [
+                      "prepare_next_meeting",
+                      "analyze_decisions",
+                      "analyze_actions",
+                      "analyze_risks",
+                      "analyze_questions",
+                      "propose_follow_ups"
+                    ]
+                  },
+                  "availability": { "enum": ["AVAILABLE_LOCAL", "DRAFT_ONLY"] },
+                  "effect": { "enum": ["READ_ONLY", "LOCAL_DRAFT"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "claimResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "ok", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "action.claim.result" },
+        "correlationId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "ok": { "const": true },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["disposition", "claimToken"],
+              "properties": {
+                "disposition": { "const": "CLAIMED" },
+                "claimToken": { "type": "string", "format": "uuid" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["disposition", "result"],
+              "properties": {
+                "disposition": { "const": "REPLAY" },
+                "result": { "$ref": "#/$defs/executionResult" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["disposition"],
+              "properties": {
+                "disposition": { "enum": ["IN_PROGRESS", "CONFLICT"] }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "completeResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "type", "correlationId", "ok", "payload"],
+      "properties": {
+        "version": { "const": "1.0" },
+        "type": { "const": "action.complete.result" },
+        "correlationId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "ok": { "const": true },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["disposition", "result"],
+              "properties": {
+                "disposition": { "enum": ["RECORDED", "REPLAY"] },
+                "result": { "$ref": "#/$defs/executionResult" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["disposition"],
+              "properties": {
+                "disposition": { "enum": ["NOT_CLAIMED", "CONFLICT"] }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

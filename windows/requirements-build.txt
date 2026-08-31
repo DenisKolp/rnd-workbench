@@ -1,0 +1,4 @@
+# Isolated Windows bridge build environment. Do not install the root project:
+# its default dependency set contains Apple-only MLX packages.
+numpy==2.2.6
+pyinstaller==6.15.0

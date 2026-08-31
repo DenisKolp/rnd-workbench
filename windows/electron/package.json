@@ -1,0 +1,46 @@
+{
+  "name": "rnd-workbench-windows",
+  "version": "0.1.0-pilot",
+  "private": true,
+  "description": "Electron shell for the RnD Workbench Windows pilot",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "electron": "44.0.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "ru.rnd-workbench.desktop",
+    "productName": "RnD Workbench",
+    "asar": true,
+    "directories": {
+      "output": "../dist/electron"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/backend/rnd-workbench-backend.exe",
+        "to": "backend/rnd-workbench-backend.exe"
+      },
+      {
+        "from": "ptt-hotkey.ps1",
+        "to": "ptt/ptt-hotkey.ps1"
+      },
+      {
+        "from": "ptt-insert.ps1",
+        "to": "ptt/ptt-insert.ps1"
+      }
+    ],
+    "win": {
+      "target": ["portable"],
+      "artifactName": "RnD-Workbench-Windows-Pilot-${version}-${arch}.${ext}"
+    }
+  }
+}

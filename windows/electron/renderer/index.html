@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RnD Workbench</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body data-mode="compact" data-route="unconfigured" data-compact-view="voice" data-voice-state="idle">
+    <div class="app-shell">
+      <header class="titlebar">
+        <div class="brand-mark" aria-hidden="true"><span></span></div>
+        <div class="brand-copy">
+          <strong>RnD Workbench</strong>
+          <span id="routeLabel">модель не настроена</span>
+        </div>
+        <div class="titlebar-actions">
+          <button class="icon-button" id="settingsButton" title="Настройки модели" aria-label="Настройки модели">⚙</button>
+          <button class="mode-button" id="modeButton">Полное окно</button>
+          <button class="icon-button window-button" id="minimizeButton" title="Свернуть" aria-label="Свернуть">—</button>
+          <button class="icon-button window-button close" id="closeButton" title="Закрыть" aria-label="Закрыть">×</button>
+        </div>
+      </header>
+
+      <div class="workspace-grid">
+        <aside class="sidebar full-only">
+          <div class="sidebar-heading">
+            <span>ЗАДАЧИ</span>
+            <button id="newTaskButton" title="Новая задача" aria-label="Новая задача">＋</button>
+          </div>
+          <div id="taskList" class="task-list"></div>
+          <div class="sidebar-foot">
+            <span class="status-dot"></span>
+            <span id="sidebarStatus">Windows pilot</span>
+          </div>
+        </aside>
+
+        <main class="main-pane">
+          <nav class="compact-switch compact-only" aria-label="Режим компактного окна">
+            <button id="voiceTab" class="active">Голос</button>
+            <button id="chatTab">Чат</button>
+          </nav>
+
+          <section class="voice-panel compact-only" aria-labelledby="voiceHeading">
+            <div class="ambient-ring ring-one"></div>
+            <div class="ambient-ring ring-two"></div>
+            <p class="eyebrow">КОМПАКТНЫЙ ПОМОЩНИК</p>
+            <h1 id="voiceHeading">Скажите, что нужно сделать</h1>
+            <p id="voiceStatus" class="voice-status">Проверяю голосовой runtime…</p>
+            <div class="voice-visual" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <button id="micButton" class="mic-button" disabled aria-label="Начать голосовой ввод" aria-pressed="false">
+              <span class="mic-glyph">●</span>
+              <span id="micLabel">Проверяю голосовой runtime</span>
+            </button>
+            <p class="voice-note" id="voiceNote">
+              Для голоса нужны Faster-Whisper и доступный локальный OmniVoice-Fast server.
+            </p>
+          </section>
+
+          <section class="chat-card" aria-label="Чат с RnD Workbench">
+            <div class="chat-heading full-only">
+              <div>
+                <p class="eyebrow">РАБОЧИЙ КОНТЕКСТ</p>
+                <h1 id="taskTitle">Новая задача</h1>
+              </div>
+              <div class="metrics" id="metricsLabel">Готов к работе</div>
+            </div>
+            <div id="messages" class="messages" role="log" aria-live="polite"></div>
+            <div class="composer">
+              <label class="sr-only" for="composerInput">Сообщение</label>
+              <textarea id="composerInput" rows="1" placeholder="Поставьте задачу или задайте вопрос…"></textarea>
+              <button id="stopButton" class="secondary-button" title="Остановить ответ">Стоп</button>
+              <button id="sendButton" class="send-button">Отправить</button>
+            </div>
+          </section>
+        </main>
+
+        <aside class="pilot-panel full-only">
+          <p class="eyebrow">ГОТОВНОСТЬ</p>
+          <h2>Windows pilot</h2>
+          <p class="panel-lead">Эта сборка отделяет работающие функции от целевой архитектуры.</p>
+          <div class="meeting-import-card">
+            <strong>Встреча из eXpress (Синапс)</strong>
+            <p>Добавьте готовый документ Recordings Bot или ZIP-пакет с описанием и вложениями. Обработка выполняется локально.</p>
+            <div class="meeting-import-actions">
+              <button class="secondary-button" id="meetingAudioImportButton" type="button">Аудиозапись · Whisper</button>
+              <button class="secondary-button" id="meetingTranscriptImportButton" type="button">Готовый транскрипт</button>
+              <button class="secondary-button" id="synapseImportButton" type="button">Пакет с контекстом</button>
+            </div>
+          </div>
+          <ul class="readiness-list">
+            <li class="ready"><span>✓</span><div><strong>Electron UI</strong><small>Один процесс окна, compact ↔ full</small></div></li>
+            <li class="ready"><span>✓</span><div><strong>Текстовый чат</strong><small>История задач в локальной SQLite</small></div></li>
+            <li class="ready"><span>✓</span><div><strong>Локальная модель</strong><small>OpenAI API на localhost</small></div></li>
+            <li class="ready"><span>✓</span><div><strong>Корпоративная модель</strong><small>Только HTTPS, ключ в памяти</small></div></li>
+            <li class="partial"><span>◐</span><div><strong>Голосовой контур</strong><small>PCM capture/playback, VAD и barge-in готовы в исходниках; runtime подключается отдельно</small></div></li>
+            <li class="ready"><span>✓</span><div><strong>eXpress (Синапс)</strong><small>Готовый транскрипт или пакет с provenance; BotX API не подключён</small></div></li>
+            <li class="planned"><span>→</span><div><strong>Корпоративные системы</strong><small>Коннекторы требуют API и стендов</small></div></li>
+          </ul>
+          <div class="architecture-note">
+            <strong>Граница для Java core</strong>
+            <p>Electron общается с core по JSONL. Будущий сервис может заменить Python-мост без смены UI.</p>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <dialog id="settingsDialog">
+      <form method="dialog" id="settingsForm">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">МАРШРУТ МОДЕЛИ</p>
+            <h2>Подключение</h2>
+          </div>
+          <button class="icon-button" id="settingsCloseButton" type="button" aria-label="Закрыть">×</button>
+        </div>
+        <label>
+          Контур
+          <select id="providerInput">
+            <option value="local">Локальная модель на этом устройстве</option>
+            <option value="corporate">Корпоративная модель</option>
+          </select>
+        </label>
+        <label>
+          OpenAI-compatible endpoint
+          <input id="endpointInput" type="url" autocomplete="off" placeholder="http://127.0.0.1:11434/v1" />
+        </label>
+        <label>
+          Идентификатор модели
+          <input id="modelInput" type="text" autocomplete="off" placeholder="qwen3:4b" />
+        </label>
+        <label>
+          API-ключ
+          <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Для localhost не нужен" />
+        </label>
+        <p class="security-note">Удалённый endpoint обязан использовать HTTPS. Ключ живёт только в памяти core и не попадает в SQLite или события.</p>
+        <div class="dialog-actions">
+          <button class="secondary-button" id="settingsCancelButton" type="button">Отмена</button>
+          <button class="send-button" id="connectButton" type="submit">Подключить</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

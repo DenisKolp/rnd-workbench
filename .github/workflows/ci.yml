@@ -1,0 +1,105 @@
+name: RnD Workbench CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rnd-workbench-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-and-desktop-contracts:
+    name: Python and desktop contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install cross-platform test dependencies
+        run: >-
+          python -m pip install
+          "numpy==2.2.6"
+          "pytest>=8.3,<9"
+          "sounddevice>=0.5.1,<1"
+          "soundfile>=0.13.1,<1"
+      - name: Run Python and UI contract tests
+        env:
+          PYTHONPATH: src
+        run: python -m pytest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Parse Electron sources
+        run: |
+          node --check windows/electron/main.js
+          node --check windows/electron/preload.js
+          node --check windows/electron/renderer/app.js
+
+  java-core:
+    name: Java 21 core
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: core-java
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.7.1"
+      - name: Compile and test core
+        run: gradle --no-daemon clean test installDist
+
+  windows-portable-source-build:
+    name: Windows Electron portable source build
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Windows build and contract dependencies
+        shell: pwsh
+        run: |
+          python -m pip install -r windows/requirements-build.txt
+          python -m pip install "pytest>=8.3,<9" "sounddevice>=0.5.1,<1" "soundfile>=0.13.1,<1"
+      - name: Run Windows-specific contracts
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = Join-Path $PWD "src"
+          python -m pytest tests/test_windows_backend.py tests/test_windows_electron_contract.py tests/test_synapse_package.py tests/test_integrations.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: windows/electron/package-lock.json
+      - name: Build portable text-first package
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File windows/build.ps1 -Python python
+      - name: Smoke-test packaged backend
+        shell: pwsh
+        run: |
+          $dataPath = Join-Path $env:RUNNER_TEMP "rnd-workbench-smoke.sqlite3"
+          '{"command":"quit"}' | & windows/dist/backend/rnd-workbench-backend.exe --data $dataPath
+          if ($LASTEXITCODE -ne 0) { throw "Packaged backend smoke-test failed." }
+      - name: Upload unsigned QA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RnD-Workbench-Windows-unsigned-QA
+          path: windows/dist/electron/*.exe
+          if-no-files-found: error
+          retention-days: 7
