@@ -1876,7 +1876,7 @@ final class BackendController: ObservableObject {
         let panel = NSOpenPanel()
         panel.title = "Импортировать пакет встречи из eXpress (Синапс)"
         panel.prompt = "Импортировать"
-        panel.message = "Выберите каталог экспорта или ZIP-пакет с manifest.json, транскриптом, описанием и вложениями. Импорт выполняется локально."
+        panel.message = "Выберите папку или ZIP. Поддерживается manifest.json либо быстрый набор: один transcript/расшифровка, один description/описание и остальные вложения. Импорт выполняется локально."
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
@@ -4180,7 +4180,7 @@ struct MeetingsView: View {
                 meetingFilters
                 Divider().opacity(0.35)
                 if visibleMeetings.isEmpty {
-                    EmptyState(icon: "person.2.slash", title: "Встречи не найдены", detail: controller.meetings.isEmpty ? "Добавьте аудиозапись, готовый транскрипт или пакет встречи из eXpress (Синапс) — распознавание и анализ выполняются локально." : "Измените фильтр по человеку или периоду.")
+                    EmptyState(icon: "person.2.slash", title: "Встречи не найдены", detail: controller.meetings.isEmpty ? "Добавьте аудиозапись, готовый транскрипт или папку/ZIP встречи из eXpress (Синапс) — распознавание и анализ выполняются локально." : "Измените фильтр по человеку или периоду.")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(visibleMeetings, selection: Binding(get: { controller.currentMeetingID }, set: { if let id = $0 { controller.selectMeeting(id) } })) { meeting in
@@ -4248,7 +4248,7 @@ struct MeetingsView: View {
                     }
                     Divider()
                     Button(action: controller.chooseSynapseMeetingPackage) {
-                        Label("Пакет встречи из eXpress (Синапс)", systemImage: "shippingbox.and.arrow.backward")
+                        Label("Папка или ZIP eXpress (Синапс)", systemImage: "shippingbox.and.arrow.backward")
                     }
                 } label: {
                     Label("Добавить встречу", systemImage: "plus.circle.fill")
@@ -4257,7 +4257,7 @@ struct MeetingsView: View {
                 .tint(RnDTheme.navy)
                 .fixedSize(horizontal: true, vertical: false)
                 .disabled(!controller.canImportMeetingAudio)
-                .help("Добавить аудио, транскрипт или локальный пакет встречи из eXpress (Синапс)")
+                .help("Добавить аудио, транскрипт или локальную папку/ZIP встречи из eXpress (Синапс)")
             }
             .controlSize(.small)
             if let stage = controller.meetingAudioImportStage {

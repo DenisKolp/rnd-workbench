@@ -31,7 +31,7 @@ Faster-Whisper weights и loopback OmniVoice-Fast server Python-мост чес�
 | Голосовой ввод, STT | Готово в исходниках | Electron WebAudio → mono PCM16/16 кГц, adaptive VAD/pre-roll и Faster-Whisper; нужен Windows hardware QA |
 | Глобальная диктовка | Готово в исходниках | Удержание F8 записывает речь, отпускание вставляет текст через UI Automation/SendInput; secure fields отклоняются, нужен Windows hardware QA |
 | TTS, единый голос, перебивание | Готово в исходниках | Один короткий OmniVoice-Fast запрос с фиксированными profile/seed, PCM stream, limiter, 12-мс fade и barge-in; акустические SLO не измерены |
-| Импорт встреч eXpress | Готово в исходниках | Локальный Faster-Whisper обрабатывает выбранный аудиофайл; также доступны готовый транскрипт и пакет с provenance. Нужен Windows hardware QA |
+| Импорт встреч eXpress | Готово в исходниках | Локальный Faster-Whisper обрабатывает выбранный аудиофайл; также доступны готовый транскрипт и быстрый ZIP с описанием/вложениями без ручного manifest. Нужен Windows hardware QA |
 | Jira / Kaiten / Confluence / почта / календарь | Не подключено | Нужны корпоративные API, OAuth/SSO и тестовые стенды |
 | Voice-ready portable QA artifact | Проверено в CI | Frozen backend импортирует Faster-Whisper, CTranslate2 и Tokenizers, запускает bundled Java route gate и action journal probe; artifact хранится семь дней |
 | Подписанный установщик | Не проверено | Windows CI создаёт unsigned portable artifact; веса Whisper, OmniVoice server, подпись и hardware QA не входят в эту проверку |

@@ -87,11 +87,11 @@
           <p class="panel-lead">Эта сборка отделяет работающие функции от целевой архитектуры.</p>
           <div class="meeting-import-card">
             <strong>Встреча из eXpress (Синапс)</strong>
-            <p>Добавьте готовый документ Recordings Bot или ZIP-пакет с описанием и вложениями. Обработка выполняется локально.</p>
+            <p>Добавьте готовый документ Recordings Bot или ZIP: один транскрипт, одно описание и вложения. Manifest не обязателен.</p>
             <div class="meeting-import-actions">
               <button class="secondary-button" id="meetingAudioImportButton" type="button">Аудиозапись · Whisper</button>
               <button class="secondary-button" id="meetingTranscriptImportButton" type="button">Готовый транскрипт</button>
-              <button class="secondary-button" id="synapseImportButton" type="button">Пакет с контекстом</button>
+              <button class="secondary-button" id="synapseImportButton" type="button">ZIP с контекстом</button>
             </div>
           </div>
           <div class="approval-card">
@@ -108,7 +108,7 @@
             <li class="ready"><span>✓</span><div><strong>Локальная модель</strong><small>OpenAI API на localhost</small></div></li>
             <li class="ready"><span>✓</span><div><strong>Корпоративная модель</strong><small>Только HTTPS, ключ в памяти</small></div></li>
             <li class="partial"><span>◐</span><div><strong>Голосовой контур</strong><small>PCM capture/playback, VAD и barge-in готовы в исходниках; runtime подключается отдельно</small></div></li>
-            <li class="ready"><span>✓</span><div><strong>eXpress (Синапс)</strong><small>Готовый транскрипт или пакет с provenance; BotX API не подключён</small></div></li>
+            <li class="ready"><span>✓</span><div><strong>eXpress (Синапс)</strong><small>Готовый транскрипт или быстрый ZIP с provenance; BotX API не подключён</small></div></li>
             <li class="partial"><span>◐</span><div><strong>Корпоративные системы</strong><small>Предпросмотр, подтверждение и защита от дублей готовы; API требуют стендов</small></div></li>
           </ul>
           <div class="architecture-note">

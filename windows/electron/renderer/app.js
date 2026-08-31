@@ -61,7 +61,7 @@ function setMeetingImporting(active, kind = state.meetingImportKind) {
     packageButton.disabled = state.meetingImporting;
     packageButton.textContent = state.meetingImporting && activeKind === "package"
       ? "Проверяю пакет…"
-      : "Пакет с контекстом";
+      : "ZIP с контекстом";
   }
   if (!state.meetingImporting) state.meetingImportKind = "";
 }

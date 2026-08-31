@@ -252,6 +252,8 @@ def test_windows_full_window_imports_express_transcript_or_package_through_trust
     assert 'id="meetingAudioImportButton"' in html
     assert 'id="meetingTranscriptImportButton"' in html
     assert 'id="synapseImportButton"' in html
+    assert '>ZIP с контекстом</button>' in html
+    assert "Manifest не обязателен" in html
     assert 'sendCommand("import_meeting_transcript"' in renderer
     assert 'sendCommand("import_meeting_audio"' in renderer
     assert 'sendCommand("import_synapse_package"' in renderer

@@ -40,6 +40,22 @@ FINGERPRINT_PROFILE = "synapse-meeting-package-fingerprint-v2"
 MAX_SUPPORTING_CONTEXT_CHARS = 6_000
 MAX_SUPPORTING_SNIPPET_CHARS = 1_200
 MAX_SUPPORTING_ATTACHMENTS = 8
+_QUICK_TEXT_SUFFIXES = frozenset(
+    {".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".log", ".xml"}
+)
+_QUICK_TRANSCRIPT_MARKERS = (
+    "transcript",
+    "transcription",
+    "стенограмм",
+    "расшифров",
+)
+_QUICK_DESCRIPTION_MARKERS = (
+    "description",
+    "summary",
+    "описан",
+    "сводк",
+    "резюм",
+)
 
 _PACKAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,127}\Z")
 _SHA256 = re.compile(r"[a-f0-9]{64}\Z")
@@ -187,6 +203,9 @@ class _PackageReader(AbstractContextManager["_PackageReader"]):
     def read(self, relative_path: str, *, max_bytes: int) -> bytes:
         raise NotImplementedError
 
+    def entries(self) -> tuple[str, ...]:
+        raise NotImplementedError
+
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         return None
 
@@ -213,6 +232,21 @@ class _DirectoryReader(_PackageReader):
         if len(data) != size or len(data) > max_bytes:
             raise ValueError(f"Некорректный размер файла пакета: {relative_path}")
         return data
+
+    def entries(self) -> tuple[str, ...]:
+        entries: list[str] = []
+        for candidate in self.root.rglob("*"):
+            if candidate.is_symlink():
+                raise ValueError("Символические ссылки в пакете не поддерживаются")
+            if not candidate.is_file():
+                continue
+            relative = _safe_relative_path(candidate.relative_to(self.root).as_posix())
+            entries.append(relative)
+            if len(entries) > MAX_ZIP_ENTRIES:
+                raise ValueError(
+                    f"В пакете допустимо не более {MAX_ZIP_ENTRIES} файлов"
+                )
+        return tuple(sorted(entries))
 
 
 class _ZipReader(_PackageReader):
@@ -256,6 +290,9 @@ class _ZipReader(_PackageReader):
             raise ValueError(f"Некорректный размер файла пакета: {relative_path}")
         return data
 
+    def entries(self) -> tuple[str, ...]:
+        return tuple(sorted(self.infos))
+
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.archive.close()
 
@@ -283,8 +320,24 @@ class SynapseMeetingPackageImporter:
                 "Пакет eXpress (Синапс) должен быть каталогом или ZIP-файлом"
             )
         with reader:
-            manifest_bytes = reader.read(MANIFEST_NAME, max_bytes=MAX_MANIFEST_BYTES)
-            manifest_json = _strict_json(manifest_bytes)
+            entries = reader.entries()
+            if MANIFEST_NAME in entries:
+                manifest_bytes = reader.read(
+                    MANIFEST_NAME,
+                    max_bytes=MAX_MANIFEST_BYTES,
+                )
+                manifest_json = _strict_json(manifest_bytes)
+            else:
+                display_name = (
+                    package_path.stem
+                    if package_path.is_file()
+                    else package_path.name
+                )
+                manifest_json = _quick_layout_manifest(
+                    entries,
+                    display_name,
+                    reader,
+                )
             return _parse_manifest(manifest_json, reader)
 
     def import_package(
@@ -965,6 +1018,112 @@ class SynapseMeetingPackageImporter:
                 pass
             raise
         return target
+
+
+def _quick_layout_manifest(
+    entries: Iterable[str],
+    display_name: str,
+    reader: _PackageReader,
+) -> dict[str, Any]:
+    """Build a strict local manifest from an unambiguous desktop bundle layout."""
+
+    visible = tuple(
+        entry
+        for entry in sorted(set(entries))
+        if not any(
+            part.startswith(".") or part.casefold() == "__macosx"
+            for part in PurePosixPath(entry).parts
+        )
+    )
+    transcript_candidates = [
+        entry
+        for entry in visible
+        if PurePosixPath(entry).suffix.casefold() in _QUICK_TEXT_SUFFIXES
+        and any(
+            marker in PurePosixPath(entry).stem.casefold()
+            for marker in _QUICK_TRANSCRIPT_MARKERS
+        )
+    ]
+    description_candidates = [
+        entry
+        for entry in visible
+        if PurePosixPath(entry).suffix.casefold() in _QUICK_TEXT_SUFFIXES
+        and any(
+            marker in PurePosixPath(entry).stem.casefold()
+            for marker in _QUICK_DESCRIPTION_MARKERS
+        )
+    ]
+    if len(transcript_candidates) != 1:
+        raise ValueError(
+            "Для быстрого импорта нужен ровно один UTF-8 файл с именем "
+            "transcript/стенограмма/расшифровка"
+        )
+    if len(description_candidates) != 1:
+        raise ValueError(
+            "Для быстрого импорта нужен ровно один UTF-8 файл с именем "
+            "description/summary/описание/сводка"
+        )
+    transcript = transcript_candidates[0]
+    description = description_candidates[0]
+    if transcript == description:
+        raise ValueError("Транскрипт и описание должны быть разными файлами")
+    attachments = [
+        entry for entry in visible if entry not in {transcript, description}
+    ]
+    if len(attachments) > MAX_ATTACHMENTS:
+        raise ValueError(f"Допустимо не более {MAX_ATTACHMENTS} вложений")
+    normalized_title = re.sub(r"[_-]+", " ", display_name).strip()
+    title = normalized_title[:240] or "Встреча eXpress"
+    identity_parts: list[dict[str, str]] = []
+    total_bytes = 0
+    for entry in visible:
+        max_bytes = (
+            MAX_TRANSCRIPT_BYTES
+            if entry == transcript
+            else MAX_DESCRIPTION_BYTES
+            if entry == description
+            else MAX_ATTACHMENT_BYTES
+        )
+        data = reader.read(entry, max_bytes=max_bytes)
+        total_bytes += len(data)
+        if total_bytes > MAX_TOTAL_BYTES:
+            raise ValueError("Суммарный размер пакета превышает 250 МБ")
+        identity_parts.append(
+            {"path": entry, "sha256": hashlib.sha256(data).hexdigest()}
+        )
+    identity = json.dumps(
+        {"title": title, "parts": identity_parts},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    package_id = f"quick-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:32]}"
+
+    def part(path: str) -> dict[str, str]:
+        return {
+            "path": path,
+            "title": PurePosixPath(path).name,
+            "media_type": _infer_media_type(path),
+        }
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "source_system": SOURCE_SYSTEM,
+        "import_mode": IMPORT_MODE,
+        "package_id": package_id,
+        "meeting": {
+            "title": title,
+            "participants": [],
+            "classification": "internal",
+        },
+        "transcript": part(transcript),
+        "description": part(description),
+        "attachments": [part(path) for path in attachments],
+        "metadata": {
+            "generated_manifest": True,
+            "quick_layout": "transcript+description+attachments",
+        },
+    }
 
 
 def _parse_manifest(payload: Any, reader: _PackageReader) -> PackageManifest:

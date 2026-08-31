@@ -380,4 +380,4 @@ def test_meeting_import_menu_supports_audio_transcript_and_synapse_package() -> 
     assert 'Label("Добавить встречу", systemImage: "plus.circle.fill")' in source
     assert 'Label("Аудиозапись", systemImage: "waveform.badge.plus")' in source
     assert 'Label("Готовый транскрипт", systemImage: "doc.badge.plus")' in source
-    assert 'Label("Пакет встречи из eXpress (Синапс)", systemImage: "shippingbox.and.arrow.backward")' in source
+    assert 'Label("Папка или ZIP eXpress (Синапс)", systemImage: "shippingbox.and.arrow.backward")' in source

@@ -647,7 +647,7 @@ ipcMain.on("backend:command", (event, payload) => {
 ipcMain.handle("synapse:choose-package", async (event) => {
   if (!isTrustedRendererEvent(event) || !mainWindow) return null;
   const selection = await dialog.showOpenDialog(mainWindow, {
-    title: "Импортировать пакет встречи из eXpress (Синапс)",
+    title: "Импортировать ZIP встречи из eXpress (Синапс)",
     buttonLabel: "Импортировать",
     properties: ["openFile"],
     filters: [

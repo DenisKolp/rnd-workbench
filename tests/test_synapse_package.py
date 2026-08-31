@@ -113,6 +113,19 @@ def zip_package(directory: Path, target: Path) -> Path:
     return target
 
 
+def create_quick_bundle(root: Path) -> Path:
+    root.mkdir(parents=True)
+    (root / "attachments").mkdir()
+    (root / "Расшифровка.txt").write_text(TRANSCRIPT, encoding="utf-8")
+    (root / "Сводка.md").write_text(DESCRIPTION, encoding="utf-8")
+    (root / "attachments" / "plan.md").write_text(
+        "План запуска: проверить 30 устройств.",
+        encoding="utf-8",
+    )
+    (root / ".DS_Store").write_bytes(b"ignored-local-metadata")
+    return root
+
+
 def replace_binary_attachment(
     package: Path,
     *,
@@ -207,6 +220,68 @@ def test_import_builds_enriched_traceable_context_and_truthful_gate(tmp_path: Pa
     audit = store._rows("SELECT * FROM audit_log WHERE action='synapse.package.import'")
     assert len(audit) == 1
     assert audit[0]["status"] == "local_mock"
+
+
+def test_quick_bundle_without_manifest_imports_description_and_attachments(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    bundle = create_quick_bundle(tmp_path / "Статус-пилота")
+
+    result = LocalOrchestrator(store).import_synapse_meeting_package(
+        bundle,
+        workspace_id=store.default_workspace_id(),
+    )
+
+    assert result["status"] == "imported"
+    assert result["capability"]["real_integration"] is False
+    assert result["supporting_context"]["description"] is not None
+    assert "согласовать запуск пилота" in result["supporting_context"]["description"]["snippet"]
+    assert result["supporting_context"]["attachments"][0]["title"] == "plan.md"
+    primary = store.get_source(result["source_id"])
+    assert primary["title"] == "Статус пилота"
+    assert primary["metadata"]["package_metadata"] == {
+        "generated_manifest": "true",
+        "quick_layout": "transcript+description+attachments",
+    }
+
+
+def test_quick_directory_and_zip_share_deterministic_import_identity(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    bundle = create_quick_bundle(tmp_path / "Команда-пилота")
+    archive = zip_package(bundle, tmp_path / "Команда-пилота.zip")
+    orchestrator = LocalOrchestrator(store)
+
+    first = orchestrator.import_synapse_meeting_package(
+        bundle,
+        workspace_id=store.default_workspace_id(),
+    )
+    repeated = orchestrator.import_synapse_meeting_package(
+        archive,
+        workspace_id=store.default_workspace_id(),
+    )
+
+    assert first["status"] == "imported"
+    assert repeated["status"] == "already_imported"
+    assert repeated["source_id"] == first["source_id"]
+
+
+def test_quick_bundle_rejects_ambiguous_transcript_before_store_mutation(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    bundle = create_quick_bundle(tmp_path / "ambiguous")
+    (bundle / "transcript-copy.md").write_text(TRANSCRIPT, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="ровно один UTF-8 файл"):
+        LocalOrchestrator(store).import_synapse_meeting_package(
+            bundle,
+            workspace_id=store.default_workspace_id(),
+        )
+
+    assert not store._rows("SELECT * FROM sources")
 
 
 def test_supporting_context_reserves_description_before_large_attachments(
