@@ -34,7 +34,7 @@ TTS остаются на устройстве; текстовый inference м�
 `~/Library/Application Support/LocalVoiceAssistant/`; Windows-клиент использует
 каталог приложения в `%LOCALAPPDATA%`.
 
-Текущая macOS-сборка — **0.9.4 (build 12)**.
+Текущая macOS-сборка — **0.9.5 (build 13)**.
 
 ## Возможности приложения
 
@@ -349,8 +349,8 @@ TTS выводится блоками по 30 мс, поэтому подтве�
 uv run pytest
 ```
 
-Полный Python/UI-набор содержит **433 теста** и проходит локально; в него входят
-28 macOS и 67 Windows contract-тестов, а также Python ↔ Java golden contracts.
+Полный Python/UI-набор содержит **435 тестов** и проходит локально; в него входят
+28 macOS и 69 Windows contract-тестов, а также Python ↔ Java golden contracts.
 Отдельно проходят 44 JUnit-теста Java 21 core.
 Платформенные оговорки зафиксированы в `CURRENT_STATE.md`. Electron
 `node --check`, endpoint-canonicalization self-tests и строгая рекурсивная

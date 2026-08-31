@@ -35,7 +35,7 @@
           <div id="taskList" class="task-list"></div>
           <div class="sidebar-foot">
             <span class="status-dot"></span>
-            <span id="sidebarStatus">Windows pilot</span>
+            <span id="sidebarStatus">Нужна настройка</span>
           </div>
         </aside>
 
@@ -50,16 +50,16 @@
             <div class="ambient-ring ring-two"></div>
             <p class="eyebrow">КОМПАКТНЫЙ ПОМОЩНИК</p>
             <h1 id="voiceHeading">Скажите, что нужно сделать</h1>
-            <p id="voiceStatus" class="voice-status">Проверяю голосовой runtime…</p>
+            <p id="voiceStatus" class="voice-status">Проверяю голос…</p>
             <div class="voice-visual" aria-hidden="true">
               <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
             </div>
             <button id="micButton" class="mic-button" disabled aria-label="Начать голосовой ввод" aria-pressed="false">
               <span class="mic-glyph">●</span>
-              <span id="micLabel">Проверяю голосовой runtime</span>
+              <span id="micLabel">Проверяю голос</span>
             </button>
             <p class="voice-note" id="voiceNote">
-              Для голоса нужны Faster-Whisper и доступный локальный OmniVoice-Fast server.
+              Локальный голос: Faster-Whisper + OmniVoice-Fast.
             </p>
           </section>
 
@@ -74,20 +74,20 @@
             <div id="messages" class="messages" role="log" aria-live="polite"></div>
             <div class="composer">
               <label class="sr-only" for="composerInput">Сообщение</label>
-              <textarea id="composerInput" rows="1" placeholder="Поставьте задачу или задайте вопрос…"></textarea>
-              <button id="stopButton" class="secondary-button" title="Остановить ответ">Стоп</button>
+              <textarea id="composerInput" rows="1" placeholder="Сообщение…"></textarea>
+              <button id="stopButton" class="secondary-button" title="Остановить ответ" hidden>Стоп</button>
               <button id="sendButton" class="send-button">Отправить</button>
             </div>
           </section>
         </main>
 
         <aside class="pilot-panel full-only">
-          <p class="eyebrow">ГОТОВНОСТЬ</p>
-          <h2>Windows pilot</h2>
-          <p class="panel-lead">Эта сборка отделяет работающие функции от целевой архитектуры.</p>
+          <p class="eyebrow">РАБОЧИЙ КОНТУР</p>
+          <h2>Инструменты</h2>
+          <p class="panel-lead">Встречи и внешние действия — рядом с текущей задачей.</p>
           <div class="meeting-import-card">
             <strong>Встреча из eXpress (Синапс)</strong>
-            <p>Добавьте готовый документ Recordings Bot или ZIP: один транскрипт, одно описание и вложения. Manifest не обязателен.</p>
+            <p>Добавьте аудиозапись, готовый транскрипт или ZIP с описанием и вложениями.</p>
             <div class="meeting-import-actions">
               <button class="secondary-button" id="meetingAudioImportButton" type="button">Аудиозапись · Whisper</button>
               <button class="secondary-button" id="meetingTranscriptImportButton" type="button">Готовый транскрипт</button>
@@ -100,46 +100,51 @@
               <strong>Согласования</strong>
               <span id="approvalCount">0</span>
             </div>
-            <p>Внешние изменения выполняются только после подтверждения и надёжной резервировки в Java 21.</p>
+            <p>Внешние изменения выполняются только после подтверждения. Повторная отправка блокируется автоматически.</p>
             <div id="approvalList" class="approval-list"></div>
           </div>
-          <div class="pilot-metrics-card">
-            <div class="pilot-metrics-heading">
-              <strong>Качество голоса · 14 дней</strong>
-              <span id="pilotMetricsCount">0</span>
+          <details class="pilot-diagnostics">
+            <summary>Диагностика пилота</summary>
+            <div class="pilot-diagnostics-content">
+              <div class="pilot-metrics-card">
+                <div class="pilot-metrics-heading">
+                  <strong>Качество голоса · 14 дней</strong>
+                  <span id="pilotMetricsCount">0</span>
+                </div>
+                <p id="pilotMetricsSummary">Сделайте несколько голосовых запросов на этом устройстве.</p>
+                <details class="pilot-usage-details">
+                  <summary>Использование пилота</summary>
+                  <p id="pilotUsageSummary">Активных дней: 0 · завершённых запросов: 0</p>
+                  <label class="pilot-rating-label" for="pilotUsefulnessRating">
+                    Оценка полезности
+                    <select id="pilotUsefulnessRating">
+                      <option value="0" selected disabled>Не указана</option>
+                      <option value="1">1 из 5</option>
+                      <option value="2">2 из 5</option>
+                      <option value="3">3 из 5</option>
+                      <option value="4">4 из 5</option>
+                      <option value="5">5 из 5</option>
+                    </select>
+                  </label>
+                </details>
+                <button class="secondary-button" id="exportPilotMetricsButton" type="button">Экспорт отчёта JSON</button>
+                <small>Только агрегаты качества и использования — без запросов, транскриптов, документов и идентификаторов сессий.</small>
+              </div>
+              <div class="preflight-card">
+                <div class="pilot-metrics-heading">
+                  <strong>Проверка устройства</strong>
+                  <span id="pilotPreflightOverall">Проверяю</span>
+                </div>
+                <p id="pilotPreflightSummary">Определяю готовность этой установки к пилоту.</p>
+                <button class="secondary-button" id="pilotPreflightButton" type="button">Проверить снова</button>
+                <ul class="readiness-list" id="pilotPreflightList" aria-live="polite"></ul>
+              </div>
+              <div class="architecture-note">
+                <strong>Граница для Java core</strong>
+                <p>Electron использует Java-политику и журнал действий только для служебных метаданных; рабочее содержимое остаётся в локальном backend.</p>
+              </div>
             </div>
-            <p id="pilotMetricsSummary">Сделайте несколько голосовых запросов на этом устройстве.</p>
-            <details class="pilot-usage-details">
-              <summary>Использование пилота</summary>
-              <p id="pilotUsageSummary">Активных дней: 0 · завершённых запросов: 0</p>
-              <label class="pilot-rating-label" for="pilotUsefulnessRating">
-                Оценка полезности
-                <select id="pilotUsefulnessRating">
-                  <option value="0" disabled>Не указана</option>
-                  <option value="1">1 из 5</option>
-                  <option value="2">2 из 5</option>
-                  <option value="3">3 из 5</option>
-                  <option value="4">4 из 5</option>
-                  <option value="5">5 из 5</option>
-                </select>
-              </label>
-            </details>
-            <button class="secondary-button" id="exportPilotMetricsButton" type="button">Экспорт отчёта JSON</button>
-            <small>Только агрегаты качества и использования — без запросов, транскриптов, документов и идентификаторов сессий.</small>
-          </div>
-          <div class="preflight-card">
-            <div class="pilot-metrics-heading">
-              <strong>Проверка устройства</strong>
-              <span id="pilotPreflightOverall">Проверяю</span>
-            </div>
-            <p id="pilotPreflightSummary">Определяю готовность этой установки к пилоту.</p>
-            <button class="secondary-button" id="pilotPreflightButton" type="button">Проверить снова</button>
-            <ul class="readiness-list" id="pilotPreflightList" aria-live="polite"></ul>
-          </div>
-          <div class="architecture-note">
-            <strong>Граница для Java core</strong>
-            <p>Electron использует Java-политику и журнал действий только для служебных метаданных; рабочее содержимое остаётся в локальном backend.</p>
-          </div>
+          </details>
         </aside>
       </div>
     </div>
@@ -153,26 +158,28 @@
           </div>
           <button class="icon-button" id="settingsCloseButton" type="button" aria-label="Закрыть">×</button>
         </div>
-        <label>
-          Контур
-          <select id="providerInput">
-            <option value="local">Локальная модель на этом устройстве</option>
-            <option value="corporate">Корпоративная модель</option>
-          </select>
-        </label>
-        <label>
-          OpenAI-compatible endpoint
-          <input id="endpointInput" type="url" autocomplete="off" placeholder="http://127.0.0.1:11434/v1" />
-        </label>
-        <label>
-          Идентификатор модели
-          <input id="modelInput" type="text" autocomplete="off" placeholder="qwen3:4b" />
-        </label>
-        <label>
-          API-ключ
-          <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Для localhost не нужен" />
-        </label>
-        <p class="security-note">Удалённый endpoint обязан использовать HTTPS. Ключ живёт только в памяти core и не попадает в SQLite или события.</p>
+        <div class="dialog-fields">
+          <label>
+            Контур
+            <select id="providerInput">
+              <option value="local">Локальная модель на этом устройстве</option>
+              <option value="corporate">Корпоративная модель</option>
+            </select>
+          </label>
+          <label>
+            OpenAI-compatible endpoint
+            <input id="endpointInput" type="url" autocomplete="off" placeholder="http://127.0.0.1:11434/v1" />
+          </label>
+          <label>
+            Идентификатор модели
+            <input id="modelInput" type="text" autocomplete="off" placeholder="qwen3:4b" />
+          </label>
+          <label>
+            API-ключ
+            <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Для localhost не нужен" />
+          </label>
+          <p class="security-note">Удалённый endpoint обязан использовать HTTPS. Ключ живёт только в памяти core и не попадает в SQLite или события.</p>
+        </div>
         <div class="dialog-actions">
           <button class="secondary-button" id="settingsCancelButton" type="button">Отмена</button>
           <button class="send-button" id="connectButton" type="submit">Подключить</button>

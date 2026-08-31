@@ -12,6 +12,7 @@ const state = {
   listening: false,
   speaking: false,
   voicePhase: "idle",
+  responsePending: false,
   metric: "Готов к работе",
   toastTimer: null,
   meetingImporting: false,
@@ -78,12 +79,13 @@ function setMode(mode) {
   state.mode = mode;
   document.body.dataset.mode = mode;
   byId("modeButton").textContent = mode === "compact" ? "Полное окно" : "Компактно";
+  updateComposerPresentation();
 }
 
 function requestModeToggle() {
   const next = state.mode === "compact" ? "full" : "compact";
-  window.rndWorkbench.setWindowMode(next);
   setMode(next);
+  window.rndWorkbench.setWindowMode(next);
 }
 
 function setCompactView(view) {
@@ -100,6 +102,22 @@ function setCompactView(view) {
   document.body.dataset.compactView = view;
   byId("voiceTab").classList.toggle("active", view === "voice");
   byId("chatTab").classList.toggle("active", view === "chat");
+  updateComposerPresentation();
+}
+
+function updateComposerPresentation() {
+  const composer = byId("composerInput");
+  if (composer) {
+    composer.placeholder = state.mode === "compact"
+      ? "Сообщение…"
+      : "Поставьте задачу или задайте вопрос…";
+  }
+}
+
+function setResponsePending(active) {
+  state.responsePending = Boolean(active);
+  byId("stopButton").hidden = !state.responsePending;
+  byId("sendButton").hidden = state.responsePending;
 }
 
 function setVoicePhase(phase, detail = "") {
@@ -1175,6 +1193,7 @@ function handleBackendEvent(event) {
       case "assistant_start":
         state.streamingText = "";
         state.metric = "Формирую ответ…";
+        setResponsePending(true);
         renderSnapshot();
         break;
       case "assistant_delta":
@@ -1183,6 +1202,7 @@ function handleBackendEvent(event) {
         break;
       case "assistant_end":
         state.streamingText = "";
+        setResponsePending(false);
         if (event.interrupted) toast("Ответ остановлен");
         break;
       case "audio_start": audioPlayer.start(event); break;
@@ -1202,6 +1222,7 @@ function handleBackendEvent(event) {
         toast(String(event.detail || "Модель настроена"));
         break;
       case "routing_blocked":
+        setResponsePending(false);
         toast(String(event.message || "Передача контекста заблокирована политикой данных"));
         break;
       case "approval_resolved":
@@ -1313,6 +1334,7 @@ function handleBackendEvent(event) {
         break;
       case "fatal":
       case "error":
+        setResponsePending(false);
         if (state.meetingImporting) setMeetingImporting(false);
         toast(String(event.message || "Ошибка RnD Workbench"));
         state.metric = "Нужна проверка";
@@ -1569,6 +1591,7 @@ byId("pilotUsefulnessRating").addEventListener("change", (event) => {
 byId("sendButton").addEventListener("click", sendText);
 byId("stopButton").addEventListener("click", () => {
   audioPlayer.stop("user_stop");
+  setResponsePending(false);
   sendCommand("stop");
 });
 byId("micButton").addEventListener("click", () => void toggleVoiceSession());
@@ -1638,5 +1661,5 @@ sendCommand("voice_capabilities");
 sendCommand("ptt_capabilities");
 setMode("compact");
 setCompactView("voice");
-setVoicePhase("idle", "Проверяю голосовой runtime…");
+setVoicePhase("idle", "Проверяю голос…");
 void probePttMicrophonePermission();

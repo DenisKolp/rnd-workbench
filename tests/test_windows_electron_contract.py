@@ -188,6 +188,44 @@ def test_compact_chat_state_stops_hidden_microphone_capture() -> None:
     assert 'void pttDictation.cancel("switch_to_chat")' in transition
 
 
+def test_compact_controls_and_settings_remain_usable_at_410_by_420() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+    styles = (ROOT / "windows" / "electron" / "renderer" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="composerInput" rows="1" placeholder="Сообщение…"' in html
+    assert 'id="stopButton" class="secondary-button" title="Остановить ответ" hidden' in html
+    assert "function setResponsePending(active)" in renderer
+    assert 'composer.placeholder = state.mode === "compact"' in renderer
+    assert 'setResponsePending(true);' in renderer
+    assert renderer.count('setResponsePending(false);') >= 4
+    assert '<div class="dialog-fields">' in html
+    assert 'dialog { width: min(490px, calc(100vw - 32px)); max-height: calc(100vh - 20px);' in styles
+    assert '.dialog-fields { display: grid; gap: 13px; min-height: 0;' in styles
+    assert '.compact-switch button { min-width: 88px; min-height: 32px;' in styles
+    assert '.mode-button { min-height: 32px;' in styles
+
+
+def test_full_window_uses_vertical_tool_panel_and_collapses_diagnostics() -> None:
+    html = HTML.read_text(encoding="utf-8")
+    styles = (ROOT / "windows" / "electron" / "renderer" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert '<p class="eyebrow">РАБОЧИЙ КОНТУР</p>' in html
+    assert '<h2>Инструменты</h2>' in html
+    assert '<details class="pilot-diagnostics">' in html
+    assert '<summary>Диагностика пилота</summary>' in html
+    assert '<option value="0" selected disabled>Не указана</option>' in html
+    assert 'body[data-mode="full"] .full-only { display: block !important; }' in styles
+    assert 'body[data-mode="full"] .pilot-panel { display: block !important; }' in styles
+    assert 'body[data-mode="full"] .chat-heading { display: flex !important; }' in styles
+    assert '.pilot-diagnostics > summary { display: flex; min-height: 32px;' in styles
+    assert '.pilot-usage-details summary { display: flex; min-height: 30px;' in styles
+
+
 def test_global_f8_push_to_talk_is_packaged_and_bridged_without_node_exposure() -> None:
     main = MAIN.read_text(encoding="utf-8")
     preload = PRELOAD.read_text(encoding="utf-8")
@@ -319,7 +357,7 @@ def test_windows_full_window_imports_express_transcript_or_package_through_trust
     assert 'id="meetingTranscriptImportButton"' in html
     assert 'id="synapseImportButton"' in html
     assert '>ZIP с контекстом</button>' in html
-    assert "Manifest не обязателен" in html
+    assert "аудиозапись, готовый транскрипт или ZIP" in html
     assert 'sendCommand("import_meeting_transcript"' in renderer
     assert 'sendCommand("import_meeting_audio"' in renderer
     assert 'sendCommand("import_synapse_package"' in renderer

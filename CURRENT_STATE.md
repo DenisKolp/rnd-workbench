@@ -54,6 +54,9 @@ RnD Workbench — локальный по умолчанию персональ�
 - Windows Electron shell в исходниках: compact 410×420 и full являются
   состояниями одного `BrowserWindow`; WebAudio capture/playback, Faster-Whisper,
   один короткий OmniVoice-Fast TTS-запрос и barge-in проходят source contracts.
+  Визуальный аудит production renderer подтвердил видимые действия настроек в
+  compact 410×420 и отсутствие переполнения длинных кнопок; полный режим снова
+  использует вертикальную панель инструментов, а служебная диагностика свёрнута.
   Готовые транскрипты, локальные аудиофайлы и папки/ZIP eXpress импортируются;
   Windows CI собирает unsigned voice-ready portable package и запускает
   packaged backend smoke-test. Capability голоса остаётся выключенной без
@@ -110,7 +113,7 @@ PYTHONPATH=src .venv/bin/python -m pytest
 выпускается только после завершения проекта и не входит в эту промежуточную
 контрольную точку.
 
-Полный Python/UI-набор содержит 433 теста и проходит; в него входят 28 macOS, 67
+Полный Python/UI-набор содержит 435 тестов и проходит; в него входят 28 macOS, 69
 Windows contract-тестов и Python ↔ Java golden contracts. Отдельные 44
 JUnit-теста `core-java` проходят локально и в Linux CI на JDK 21/Gradle 9.7.1.
 Windows job собирает `jlink` runtime, выполняет реальные route/action journal
