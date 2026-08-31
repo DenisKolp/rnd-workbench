@@ -2,7 +2,9 @@ name: RnD Workbench CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - "intermediate-*"
   pull_request:
 
 permissions:
