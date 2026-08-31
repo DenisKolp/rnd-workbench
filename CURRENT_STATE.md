@@ -42,11 +42,12 @@ RnD Workbench — локальный по умолчанию персональ�
   локальных весов Whisper и OmniVoice-Fast server; Windows voice hardware QA и
   подписанная пилотная сборка ещё не выполнены.
 - Java 21 `core-java` содержит общие политики, executable stdio JSONL 1.0 и
-  persistent SQLite idempotency journal. Windows backend запускает
-  metadata-only route gate до LLM, а portable package включает ограниченный
-  `jlink` runtime; Python fallback видим пользователю и несовпадение политик
-  блокирует запрос. macOS route adapter и Java claim/result для внешних действий
-  ещё не подключены.
+  persistent SQLite idempotency journal. macOS и Windows backend запускают
+  metadata-only route gate до LLM, а обе сборки включают ограниченный `jlink`
+  runtime; Python fallback видим пользователю и несовпадение политик блокирует
+  запрос. В macOS compact/full фактическая политика видна рядом с маршрутом;
+  внешний публичный API требует отдельного opt-in, уровня `public` и явного
+  выбора. Java claim/result для внешних действий ещё не подключён.
 
 ## Архитектура и границы
 
@@ -86,9 +87,12 @@ PYTHONPATH=src .venv/bin/python -m pytest
 выпускается только после завершения проекта и не входит в эту промежуточную
 контрольную точку.
 
-Полный Python/UI-набор содержит 371 тест и проходит; в него входят 20 macOS, 56
+Полный Python/UI-набор содержит 378 тестов и проходит; в него входят 22 macOS, 56
 Windows contract-тестов и Python ↔ Java golden contracts. Отдельные 42
 JUnit-теста `core-java` проходят локально и в Linux CI на JDK 21/Gradle 9.7.1.
 Windows job собирает `jlink` runtime, выполняет реальный IPC probe и проверяет
-его из packaged backend. Реальный Windows hardware QA, подпись и macOS adapter
-по-прежнему обязательны перед пилотной поставкой.
+его из packaged backend. Отдельный macOS job парсит Swift shell, собирает
+`jlink` и проверяет реальный local/corporate/public-external IPC; локальная
+5,1-ГБ `.app` собрана, строго проверена `codesign` и прошла GUI-smoke с одним
+окном. Реальный Windows hardware QA и production-подпись по-прежнему обязательны
+перед пилотной поставкой.

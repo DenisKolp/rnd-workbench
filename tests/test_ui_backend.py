@@ -12,9 +12,50 @@ from voice_assistant.audio import (
     UtteranceDetector,
 )
 from voice_assistant.config import AudioConfig, Config
+from voice_assistant.java_core import JavaRouteDecision
 from voice_assistant.store import AssistantStore
 from voice_assistant.text import concise_speech_text
 from voice_assistant.ui_backend import EventEmitter, UIBackend
+
+
+class FakeCorePolicy:
+    def __init__(
+        self,
+        *,
+        ready: bool = True,
+        decision: JavaRouteDecision | None = None,
+    ) -> None:
+        self.configured = True
+        self.ready = ready
+        self.decision = decision
+        self.calls: list[dict[str, object]] = []
+        self.closed = False
+
+    def start(self) -> bool:
+        return self.ready
+
+    def diagnostics(self):  # noqa: ANN201
+        return {
+            "configured": self.configured,
+            "ready": self.ready,
+            "protocol_version": "1.0" if self.ready else None,
+            "policy": "java21" if self.ready else "python_fallback",
+        }
+
+    def decide_route(self, **kwargs):  # noqa: ANN003, ANN201
+        self.calls.append(dict(kwargs))
+        if self.decision is not None:
+            return self.decision
+        route = str(kwargs["preference"]).upper()
+        return JavaRouteDecision(
+            status="SELECTED",
+            route=route,
+            reason=f"{route}_SELECTED",
+            local_fallback_before_first_output=bool(kwargs["local_available"]),
+        )
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_event_emitter_writes_single_json_line(capsys) -> None:
@@ -385,6 +426,162 @@ def test_compact_chat_can_request_silent_text_answer(tmp_path) -> None:
 
     assert captured["speak"] is False
     assert captured["echo"] is False
+
+
+def test_macos_text_turn_is_gated_by_java_core_before_llm(capsys, tmp_path) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    core = FakeCorePolicy()
+    backend = UIBackend(
+        Config.defaults(),
+        EventEmitter(),
+        store,
+        core_policy=core,
+    )
+    class FakeAssistant:
+        @staticmethod
+        def answer(text, *, on_token, on_phase, on_speech_text, **kwargs):  # noqa: ANN001
+            del text, kwargs
+            assert core.calls
+            on_phase("thinking")
+            on_token("Проверенный ответ")
+            on_speech_text("")
+            return "Проверенный ответ"
+
+    backend.assistant = FakeAssistant()
+    backend._text_turn("Проверь маршрут", speak=False)
+
+    assert core.calls == [
+        {
+            "classification": "internal",
+            "preference": "LOCAL",
+            "local_available": True,
+            "corporate_available": False,
+            "external_available": False,
+            "corporate_scope_authorized": False,
+            "explicit_external_consent": False,
+        }
+    ]
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    answer = next(event for event in events if event["type"] == "assistant_end")
+    assert answer["llm_route"]["policy_engine"] == "java21"
+    assert answer["llm_route"]["java_core_route"] == "LOCAL"
+    assert answer["llm_route"]["java_core_configured"] is True
+
+
+def test_macos_java_route_disagreement_blocks_llm_fail_closed(capsys, tmp_path) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    core = FakeCorePolicy(
+        decision=JavaRouteDecision(
+            status="BLOCKED",
+            route=None,
+            reason="CLASSIFICATION_BLOCKS_CORPORATE",
+            local_fallback_before_first_output=False,
+        )
+    )
+    backend = UIBackend(
+        Config.defaults(),
+        EventEmitter(),
+        store,
+        core_policy=core,
+    )
+
+    class NeverCalledAssistant:
+        @staticmethod
+        def answer(*args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+            raise AssertionError("LLM must not be called")
+
+    backend.assistant = NeverCalledAssistant()
+    backend._text_turn("Не отправляй запрос", speak=False)
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert any(event["type"] == "routing_blocked" for event in events)
+    assert not any(event["type"] == "assistant_start" for event in events)
+    assert store.get_task(backend.current_task_id)["status"] == "needs_user"
+
+
+def test_macos_external_route_passes_only_explicit_policy_metadata(capsys, tmp_path) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    store.set_settings(
+        {
+            "model_mode": "external",
+            "llm_base_url": "https://api.example/v1",
+            "llm_model": "public-model",
+            "external_provider_type": "external",
+        }
+    )
+    core = FakeCorePolicy()
+    backend = UIBackend(
+        Config.defaults(),
+        EventEmitter(),
+        store,
+        core_policy=core,
+    )
+    store.set_classification("workspace", backend.current_workspace_id, "public")
+    public_task = store.create_task(
+        backend.current_workspace_id,
+        "Публичная задача",
+        classification="public",
+    )
+    backend.current_task_id = public_task["id"]
+
+    class RemoteRuntime:
+        ready = True
+        base_url = "https://api.example/v1"
+        model_name = "public-model"
+
+    remote = RemoteRuntime()
+    backend._remote_chat = remote  # type: ignore[assignment]
+
+    class FakeAssistant:
+        @staticmethod
+        def answer(text, *, chat_backend, on_token, on_phase, on_speech_text, **kwargs):  # noqa: ANN001
+            del text, kwargs
+            assert chat_backend is remote
+            on_phase("thinking")
+            on_token("Внешний ответ")
+            on_speech_text("")
+            return "Внешний ответ"
+
+    backend.assistant = FakeAssistant()
+    backend._text_turn("Публичный вопрос", speak=False)
+
+    assert core.calls[0]["preference"] == "EXTERNAL"
+    assert core.calls[0]["classification"] == "public"
+    assert core.calls[0]["external_available"] is True
+    assert core.calls[0]["explicit_external_consent"] is True
+    serialized = json.dumps(core.calls, ensure_ascii=False).casefold()
+    assert "публичный вопрос" not in serialized
+    assert "prompt" not in serialized
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    answer = next(event for event in events if event["type"] == "assistant_end")
+    assert answer["llm_route"]["actual_route"] == "external_api"
+    assert answer["llm_route"]["java_core_route"] == "EXTERNAL"
+
+
+def test_macos_snapshot_exposes_visible_java_policy_fallback(capsys, tmp_path) -> None:
+    core = FakeCorePolicy(ready=False)
+    backend = UIBackend(
+        Config.defaults(),
+        EventEmitter(),
+        AssistantStore(tmp_path / "assistant.sqlite3"),
+        core_policy=core,
+    )
+
+    backend.emit_snapshot()
+    backend.handle({"command": "quit"})
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    snapshot = next(event for event in events if event["type"] == "snapshot")
+    assert snapshot["data"]["platform"] == {
+        "name": "macos",
+        "java_core_policy": {
+            "configured": True,
+            "ready": False,
+            "protocol_version": None,
+            "policy": "python_fallback",
+        },
+    }
+    assert core.closed is True
 
 
 def test_first_turn_attachments_are_task_scoped_and_reach_same_prompt(
@@ -1519,7 +1716,13 @@ def test_background_automation_stays_on_local_llm_in_external_chat_mode(
 ) -> None:
     store = AssistantStore(tmp_path / "assistant.sqlite3")
     workspace = store.default_workspace_id()
-    backend = UIBackend(Config.defaults(), EventEmitter(), store)
+    core = FakeCorePolicy()
+    backend = UIBackend(
+        Config.defaults(),
+        EventEmitter(),
+        store,
+        core_policy=core,
+    )
     store.set_settings(
         {
             "model_mode": "external",
@@ -1576,6 +1779,18 @@ def test_background_automation_stays_on_local_llm_in_external_chat_mode(
     assert "Политика данных внешней модели" not in prompt
     assert "МАРКЕР_ЛОКАЛЬНОЙ_ПАМЯТИ" in prompt
     assert "МАРКЕР_ЛОКАЛЬНОГО_ИСТОЧНИКА" in prompt
+    assert core.calls == [
+        {
+            "classification": "internal",
+            "preference": "LOCAL",
+            "local_available": True,
+            "corporate_available": False,
+            "external_available": False,
+            "corporate_scope_authorized": False,
+            "explicit_external_consent": False,
+        }
+    ]
+    assert "кобальтовый" not in json.dumps(core.calls, ensure_ascii=False).casefold()
     completed = store._rows(
         "SELECT * FROM tasks WHERE result='Локальная автоматизация завершена'"
     )

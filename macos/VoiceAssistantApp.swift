@@ -938,6 +938,8 @@ final class BackendController: ObservableObject {
     @Published var actualLLMRoute = "local_mlx"
     @Published var actualLLMModel = ""
     @Published var routingFallbackMessage: String?
+    @Published private(set) var javaCorePolicyConfigured = false
+    @Published private(set) var javaCorePolicyReady = false
     @Published private(set) var dictationReviewSequence = 0
     @Published private(set) var presentationMode: AssistantPresentationMode = .full
     @Published private(set) var accessibilityPermissionGranted = false
@@ -1056,7 +1058,11 @@ final class BackendController: ObservableObject {
     }
     var actualLLMRouteStatusLabel: String {
         let route = isAutoLLMActive ? "Авто → \(actualLLMRouteLabel)" : actualLLMRouteLabel
-        return routingFallbackMessage == nil ? route : "Резерв → \(actualLLMRouteLabel)"
+        if routingFallbackMessage != nil { return "Резерв → \(actualLLMRouteLabel)" }
+        if javaCorePolicyConfigured && !javaCorePolicyReady {
+            return "\(route) · резервная политика"
+        }
+        return route
     }
     var compactLLMRouteStatusLabel: String {
         let shortRoute: String
@@ -1068,7 +1074,23 @@ final class BackendController: ObservableObject {
         default: shortRoute = "локально"
         }
         if routingFallbackMessage != nil { return "Резерв → \(shortRoute)" }
-        return isAutoLLMActive ? "Авто → \(shortRoute)" : actualLLMRouteLabel
+        let route = isAutoLLMActive ? "Авто → \(shortRoute)" : shortRoute
+        return javaCorePolicyConfigured && !javaCorePolicyReady
+            ? "\(route) · резерв" : route
+    }
+    var javaCorePolicyStatusLabel: String {
+        if javaCorePolicyReady { return "Java 21 · активна" }
+        if javaCorePolicyConfigured { return "Встроенная резервная политика" }
+        return "Не настроена в development-режиме"
+    }
+    var routeStatusHelp: String {
+        if let routingFallbackMessage { return routingFallbackMessage }
+        if javaCorePolicyConfigured && !javaCorePolicyReady {
+            return "Java core недоступен; действует проверенная резервная Python-политика"
+        }
+        return javaCorePolicyReady
+            ? "Маршрут проверен общей политикой Java 21"
+            : "Фактический маршрут последнего ответа"
     }
     var configuredLLMModeLabel: String {
         if isAutoLLMActive {
@@ -1333,6 +1355,13 @@ final class BackendController: ObservableObject {
             runtimePath + "/site-packages",
             runtimePath + "/src"
         ].joined(separator: ":")
+        environment["RND_WORKBENCH_JAVA_CORE_JAVA"] = runtimePath
+            + "/java-core/runtime/bin/java"
+        environment["RND_WORKBENCH_JAVA_CORE_LIB_DIR"] = runtimePath
+            + "/java-core/lib"
+        // Public external models remain separately gated by classification and
+        // explicit selection. Corporate and local routes do not need this flag.
+        environment["RND_WORKBENCH_JAVA_CORE_EXTERNAL_MODELS_ENABLED"] = "1"
         environment["PATH"] = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         task.environment = environment
         task.standardOutput = stdout
@@ -2521,6 +2550,12 @@ final class BackendController: ObservableObject {
         if !actualRoute.isEmpty { actualLLMRoute = actualRoute }
         let routeModel = string(route, "model")
         if !routeModel.isEmpty { actualLLMModel = routeModel }
+        if let configured = route["java_core_configured"] as? Bool {
+            javaCorePolicyConfigured = configured
+        }
+        if let ready = route["java_core_ready"] as? Bool {
+            javaCorePolicyReady = ready
+        }
     }
 
     private func applyArtifactHistoryPayload(_ event: [String: Any], restored: Bool) {
@@ -2762,6 +2797,11 @@ final class BackendController: ObservableObject {
         taskEvents = rows(data, "task_events").map { EntityRecord(id: string($0, "id"), title: string($0, "title"), subtitle: string($0, "kind"), detail: string($0, "detail"), status: string($0, "created_at")) }
         audit = rows(data, "audit").map { EntityRecord(id: string($0, "id"), title: string($0, "action"), subtitle: string($0, "status"), detail: string($0, "detail"), status: string($0, "created_at")) }
         settings = (data["settings"] as? [String: String]) ?? [:]
+        if let platform = data["platform"] as? [String: Any],
+           let javaPolicy = platform["java_core_policy"] as? [String: Any] {
+            javaCorePolicyConfigured = bool(javaPolicy["configured"])
+            javaCorePolicyReady = bool(javaPolicy["ready"])
+        }
         if let llm = data["llm"] as? [String: Any] {
             let snapshotMode = string(llm, "mode")
             let snapshotBaseURL = string(llm, "base_url")
@@ -5338,6 +5378,10 @@ struct SettingsView: View {
                     value: controller.configuredLLMModeLabel
                 )
                 LabeledContent("Последний фактический маршрут", value: controller.actualLLMRouteLabel)
+                LabeledContent(
+                    "Общая политика маршрутизации",
+                    value: controller.javaCorePolicyStatusLabel
+                )
                 LabeledContent("Активная модель", value: controller.modelName)
 
                 Picker("Модель для ответов", selection: $llmModeDraft) {
@@ -6368,7 +6412,7 @@ struct CompactAssistantView: View {
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(controller.isRemoteRouteActive ? RnDTheme.red : RnDTheme.blue)
                 .lineLimit(1)
-                .help(controller.routingFallbackMessage ?? "Фактический маршрут последнего ответа")
+                .help(controller.routeStatusHelp)
                 .accessibilityLabel("Фактический маршрут: \(controller.actualLLMRouteStatusLabel)")
             }
             .frame(width: 124, alignment: .leading)

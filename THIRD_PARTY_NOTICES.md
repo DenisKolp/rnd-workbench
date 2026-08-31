@@ -44,15 +44,15 @@ for corporate redistribution. A release owner must generate a complete SBOM,
 include every applicable license text, and resolve the OmniVoice CC-BY-NC
 restriction before distributing a pilot installer.
 
-## Windows Java policy companion
+## Desktop Java policy companion
 
-The unsigned Windows QA artifact also contains a `jlink` image produced from
-OpenJDK/Temurin 21 and the pinned Java dependencies declared in
-`core-java/build.gradle.kts`: Jackson 2.18.2 (Apache-2.0), Xerial SQLite JDBC
+The macOS application bundle and unsigned Windows QA artifact contain a `jlink`
+image produced from OpenJDK/Temurin 21 and the pinned Java dependencies declared
+in `core-java/build.gradle.kts`: Jackson 2.18.2 (Apache-2.0), Xerial SQLite JDBC
 3.47.2.0 (Apache-2.0) and SLF4J 2.0.16 (MIT). The generated runtime keeps the
 OpenJDK per-module `legal/` directory, and the dependency JARs retain their
 embedded `META-INF` notices where supplied. Their inclusion does not change the
-distribution gate above or clear the artifact for corporate rollout.
+distribution gate above or clear either artifact for corporate rollout.
 
 ## Project Context Router
 

@@ -112,6 +112,9 @@ class JavaCorePolicyClient:
     def from_environment(cls, data_path: Path) -> JavaCorePolicyClient:
         java_value = os.environ.get("RND_WORKBENCH_JAVA_CORE_JAVA", "").strip()
         library_value = os.environ.get("RND_WORKBENCH_JAVA_CORE_LIB_DIR", "").strip()
+        external_models_enabled = os.environ.get(
+            "RND_WORKBENCH_JAVA_CORE_EXTERNAL_MODELS_ENABLED", ""
+        ).strip().casefold() in {"1", "true", "yes"}
         command: tuple[str, ...] = ()
         if java_value and library_value:
             java_path = Path(java_value)
@@ -122,6 +125,11 @@ class JavaCorePolicyClient:
                     "-cp",
                     str(library_path / "*"),
                     JAVA_CORE_MAIN_CLASS,
+                    *(
+                        ("--external-models-enabled",)
+                        if external_models_enabled
+                        else ()
+                    ),
                 )
         journal_path = data_path.with_name(f"{data_path.stem}-java-actions.sqlite3")
         return cls(command, journal_path)

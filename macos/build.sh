@@ -8,6 +8,8 @@ legacy_app="$output_dir/Local Voice Assistant.app"
 app_dir="$output_dir/RnD Workbench.app"
 resources_dir="$app_dir/Contents/Resources"
 runtime_dir="$resources_dir/runtime"
+java_core_dir="$runtime_dir/java-core"
+java_core_distribution="$project_dir/core-java/build/install/rnd-workbench-core"
 module_cache="$project_dir/.build/swift-module-cache"
 sdk_path="$(xcrun --sdk macosx --show-sdk-path)"
 sdk_interface="$sdk_path/usr/lib/swift/Swift.swiftmodule/arm64e-apple-macos.swiftinterface"
@@ -60,6 +62,43 @@ if [[ ! -d "$runtime_dir/site-packages/mlx" ]]; then
 fi
 mkdir -p "$runtime_dir/src"
 cp -R "$project_dir/src/." "$runtime_dir/src/"
+
+# Bundle the same Java 21 metadata-only policy core used by the Windows pilot.
+# The voice/audio path remains in Python/native code and never crosses this IPC.
+gradle_command="${RND_WORKBENCH_GRADLE:-gradle}"
+"$gradle_command" --no-daemon -p "$project_dir/core-java" clean test installDist
+
+java_home_value="${JAVA_HOME:-}"
+if [[ -z "$java_home_value" || ! -x "$java_home_value/bin/jlink" ]]; then
+  java_home_value="$(/usr/libexec/java_home -v 21)"
+fi
+jlink_binary="$java_home_value/bin/jlink"
+if [[ ! -x "$jlink_binary" || "$("$jlink_binary" --version)" != 21* ]]; then
+  print -u2 "JDK 21 jlink is required"
+  exit 1
+fi
+rm -rf -- "$java_core_dir"
+mkdir -p "$java_core_dir"
+cp -R "$java_core_distribution/lib" "$java_core_dir/lib"
+"$jlink_binary" \
+  --add-modules "java.base,java.desktop,java.instrument,java.logging,java.management,java.naming,java.net.http,java.security.jgss,java.sql,java.transaction.xa,java.xml,jdk.crypto.ec,jdk.unsupported" \
+  --strip-debug \
+  --no-header-files \
+  --no-man-pages \
+  --compress=zip-6 \
+  --output "$java_core_dir/runtime"
+
+bridge_journal="$(mktemp "${TMPDIR:-/tmp}/rnd-workbench-java-bridge.XXXXXX")"
+PYTHONHOME="$runtime_dir/python" \
+PYTHONPATH="$runtime_dir/site-packages:$runtime_dir/src" \
+"$runtime_dir/python/bin/python3.12" \
+  "$project_dir/scripts/verify_java_core_bridge.py" \
+  --java "$java_core_dir/runtime/bin/java" \
+  --lib-dir "$java_core_dir/lib" \
+  --journal "$bridge_journal" \
+  --external-models-enabled
+rm -f -- "$bridge_journal" "$bridge_journal-wal" "$bridge_journal-shm"
+
 if [[ -d "$project_dir/runtime/omnivoice" ]]; then
   mkdir -p "$runtime_dir/omnivoice"
   cp -cR "$project_dir/runtime/omnivoice/." "$runtime_dir/omnivoice/"

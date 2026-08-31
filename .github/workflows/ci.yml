@@ -75,6 +75,49 @@ jobs:
           --lib-dir build/install/rnd-workbench-core/lib
           --journal "$RUNNER_TEMP/rnd-workbench-java-bridge.sqlite3"
 
+  macos-java-policy-bundle:
+    name: macOS Swift and Java policy boundary
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.7.1"
+      - name: Parse Swift shell and run macOS source contracts
+        run: |
+          python -m pip install "pytest>=8.3,<9"
+          swiftc -parse macos/VoiceAssistantApp.swift
+          PYTHONPATH=src python -m pytest tests/test_macos_contract.py tests/test_java_core_bridge.py
+      - name: Build bounded Java policy runtime
+        run: |
+          gradle --no-daemon -p core-java clean test installDist
+          mkdir -p "$RUNNER_TEMP/java-core"
+          cp -R core-java/build/install/rnd-workbench-core/lib "$RUNNER_TEMP/java-core/lib"
+          jlink \
+            --add-modules "java.base,java.desktop,java.instrument,java.logging,java.management,java.naming,java.net.http,java.security.jgss,java.sql,java.transaction.xa,java.xml,jdk.crypto.ec,jdk.unsupported" \
+            --strip-debug \
+            --no-header-files \
+            --no-man-pages \
+            --compress=zip-6 \
+            --output "$RUNNER_TEMP/java-core/runtime"
+      - name: Verify macOS bundled-style public external policy contract
+        env:
+          PYTHONPATH: src
+        run: >-
+          python scripts/verify_java_core_bridge.py
+          --java "$RUNNER_TEMP/java-core/runtime/bin/java"
+          --lib-dir "$RUNNER_TEMP/java-core/lib"
+          --journal "$RUNNER_TEMP/rnd-workbench-macos-java-bridge.sqlite3"
+          --external-models-enabled
+
   windows-portable-source-build:
     name: Windows Electron voice-ready portable build
     runs-on: windows-latest

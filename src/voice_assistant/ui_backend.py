@@ -27,6 +27,12 @@ from .audio import (
 )
 from .backends import OpenAICompatibleChat, normalize_openai_base_url, openai_url_is_loopback
 from .config import Config
+from .java_core import (
+    CorePolicyRuntime,
+    JavaCorePolicyClient,
+    JavaCoreProtocolError,
+    JavaCoreUnavailable,
+)
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
 from .store import AssistantStore
 from .synapse import SynapseImportInProgressError, SynapseRepairRequiredError
@@ -63,6 +69,7 @@ class UIBackend:
         config: Config,
         emitter: EventEmitter,
         store: AssistantStore | None = None,
+        core_policy: CorePolicyRuntime | None = None,
     ) -> None:
         self.config = config
         self.emitter = emitter
@@ -71,6 +78,11 @@ class UIBackend:
         data_path = Path(os.environ.get("LOCAL_ASSISTANT_DATA", "data/assistant.sqlite3"))
         self.store = store or AssistantStore(data_path)
         self.orchestrator = LocalOrchestrator(self.store)
+        self._core_policy = (
+            core_policy
+            if core_policy is not None
+            else JavaCorePolicyClient.from_environment(self.store.path)
+        )
         initial = self.store.snapshot()
         self.current_workspace_id = initial["current_workspace_id"]
         self.current_task_id = initial["current_task_id"]
@@ -100,6 +112,17 @@ class UIBackend:
         self._restore_llm_runtime()
 
     def load(self) -> None:
+        java_ready = self._core_policy.start()
+        java_diagnostics = self._core_policy.diagnostics()
+        self.emitter.emit(
+            "diagnostic",
+            component="java_core",
+            check="policy_runtime",
+            measured=True,
+            configured=bool(java_diagnostics.get("configured")),
+            ready=java_ready,
+            protocol_version=java_diagnostics.get("protocol_version"),
+        )
         self.emitter.emit(
             "state",
             state="loading",
@@ -604,6 +627,7 @@ class UIBackend:
             self.shutdown_event.set()
             self.cancel_dictation()
             self.stop_session()
+            self._core_policy.close()
         else:
             self.emitter.emit("error", message=f"Неизвестная команда: {name}")
 
@@ -1248,6 +1272,134 @@ class UIBackend:
             "selection_reason": selection_reason,
             "fallback_used": False,
         }
+
+    def _verify_java_route(
+        self,
+        turn: TurnContext,
+        route_metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Verify the selected model boundary without transmitting content."""
+
+        policy = turn.policy
+        if policy is None:
+            return {
+                **route_metadata,
+                "policy_engine": "python_fallback",
+                "java_core_configured": self._core_policy.configured,
+                "java_core_ready": False,
+                "java_core_reason": "python_policy_missing",
+            }
+        if not self._core_policy.ready and self._core_policy.configured:
+            self._core_policy.start()
+        if not self._core_policy.ready:
+            return {
+                **route_metadata,
+                "policy_engine": "python_fallback",
+                "java_core_configured": self._core_policy.configured,
+                "java_core_ready": False,
+                "java_core_reason": (
+                    "unavailable" if self._core_policy.configured else "not_configured"
+                ),
+            }
+
+        provider_type = str(route_metadata.get("provider_type") or "local").casefold()
+        if provider_type not in {"local", "corporate", "external"}:
+            raise ValueError("Unsupported selected provider type")
+        settings = self.store.settings()
+        configured_mode = str(route_metadata.get("configured_mode") or "local")
+        explicit_external_consent = provider_type == "external" and (
+            configured_mode == "external"
+            or (
+                configured_mode == "auto"
+                and settings.get("auto_remote_policy") == "eligible"
+            )
+        )
+        try:
+            decision = self._core_policy.decide_route(
+                classification=policy.effective_classification,
+                preference=provider_type.upper(),
+                local_available=(
+                    provider_type == "local" or self._local_chat_ready()
+                ),
+                corporate_available=provider_type == "corporate",
+                external_available=provider_type == "external",
+                corporate_scope_authorized=provider_type == "corporate",
+                explicit_external_consent=explicit_external_consent,
+            )
+        except (JavaCoreUnavailable, JavaCoreProtocolError, ValueError):
+            self._core_policy.close()
+            self.emitter.emit(
+                "diagnostic",
+                component="java_core",
+                check="route_policy",
+                measured=True,
+                configured=True,
+                ready=False,
+                fallback="python_policy",
+            )
+            return {
+                **route_metadata,
+                "policy_engine": "python_fallback",
+                "java_core_configured": True,
+                "java_core_ready": False,
+                "java_core_reason": "runtime_failure",
+            }
+
+        java_metadata = {
+            "policy_engine": "java21",
+            "java_core_configured": True,
+            "java_core_ready": True,
+            "java_core_status": decision.status,
+            "java_core_reason": decision.reason,
+            "java_core_route": decision.route,
+        }
+        selected_route = (decision.route or "").casefold()
+        if decision.status == "SELECTED" and selected_route == provider_type:
+            return {**route_metadata, **java_metadata}
+
+        self.store.update_task(turn.task_id, status="needs_user")
+        self.store.add_task_event(
+            turn.task_id,
+            "routing_blocked",
+            "Java core заблокировал маршрут",
+            f"status={decision.status};reason={decision.reason}",
+        )
+        self.store.audit(
+            turn.task_id,
+            "llm.java_route_blocked",
+            provider_type,
+            "error",
+            f"status={decision.status};reason={decision.reason}",
+        )
+        message = (
+            "Передача заблокирована общей политикой Java core. "
+            "Используйте разрешённый локальный или корпоративный маршрут."
+        )
+        self.emitter.emit(
+            "routing_blocked",
+            task_id=turn.task_id,
+            route=provider_type,
+            allowed_max=policy.allowed_max,
+            effective_classification=policy.effective_classification,
+            blocked_refs=[],
+            suggested_actions=[
+                "switch_local",
+                "remove_sensitive_context",
+                "review_classification",
+            ],
+            message=message,
+        )
+        self.emit_snapshot()
+        raise RoutingPolicyError(
+            message,
+            workspace_id=turn.workspace_id,
+            task_id=turn.task_id,
+            user_text=turn.user_text,
+            route=provider_type,
+            allowed_max=policy.allowed_max,
+            effective_classification=policy.effective_classification,
+            blocked_refs=[],
+        )
 
     def start_session(self) -> None:
         if self.session_thread is not None and self.session_thread.is_alive():
@@ -2254,6 +2406,7 @@ class UIBackend:
             }
         else:
             chat_backend, route_metadata = self._chat_backend_for_turn(turn)
+            route_metadata = self._verify_java_route(turn, route_metadata)
 
         self.emitter.emit(
             "assistant_start",
@@ -2430,6 +2583,7 @@ class UIBackend:
                         "fallback_reason": "remote_error_before_first_token",
                         "fallback_error_type": error_type,
                     }
+                    route_metadata = self._verify_java_route(turn, route_metadata)
                     self.store.add_task_event(
                         turn.task_id,
                         "routing_fallback",
@@ -2957,6 +3111,10 @@ class UIBackend:
             "llm_model", ""
         )
         snapshot["llm"] = runtime
+        snapshot["platform"] = {
+            "name": "macos",
+            "java_core_policy": self._core_policy.diagnostics(),
+        }
         snapshot["model"] = (
             f"{runtime['model']} · "
             + (
@@ -3179,6 +3337,18 @@ class UIBackend:
                 name=automation["name"],
                 task_id=turn.task_id,
             )
+            route_metadata = self._verify_java_route(
+                turn,
+                {
+                    "configured_mode": "local",
+                    "policy_route": "local",
+                    "actual_route": "local_mlx",
+                    "provider_type": "local",
+                    "model": Path(self.config.llm.model).name,
+                    "selection_reason": "automation_local",
+                    "fallback_used": False,
+                },
+            )
             reply = self.assistant.answer(
                 turn.prompt,
                 chat_history=turn.history,
@@ -3187,7 +3357,11 @@ class UIBackend:
                 echo=False,
                 chat_backend=self._local_chat,
             )
-            artifact = self.orchestrator.finish_turn(turn, reply)
+            artifact = self.orchestrator.finish_turn(
+                turn,
+                reply,
+                route_metadata=route_metadata,
+            )
             self.store.mark_automation_run(automation["id"], automation["schedule"])
             self.store.add_inbox(
                 automation["workspace_id"],
@@ -3200,7 +3374,7 @@ class UIBackend:
             self.emitter.emit("automation_completed", id=automation["id"], task_id=turn.task_id)
             self.emit_snapshot()
         except BaseException as exc:
-            if task_id:
+            if task_id and not isinstance(exc, RoutingPolicyError):
                 self.orchestrator.fail_turn(task_id, str(exc))
             self.store.mark_automation_run(automation["id"], automation["schedule"])
             self.store.add_inbox(
@@ -3249,6 +3423,7 @@ def main() -> None:
     finally:
         if backend is not None:
             backend.assistant.close()
+            backend._core_policy.close()
 
 
 if __name__ == "__main__":

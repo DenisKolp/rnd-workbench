@@ -4,6 +4,7 @@ from pathlib import Path
 SWIFT_SOURCE = Path(__file__).parents[1] / "macos" / "VoiceAssistantApp.swift"
 BUILD_SCRIPT = Path(__file__).parents[1] / "macos" / "build.sh"
 INFO_PLIST = Path(__file__).parents[1] / "macos" / "Info.plist"
+CI_WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
 
 
 def test_full_and_compact_views_are_singleton_mutually_exclusive_windows() -> None:
@@ -319,7 +320,38 @@ def test_macos_build_links_global_input_frameworks_and_advances_build_number() -
 
     assert "-framework ApplicationServices" in build
     assert "-framework CoreGraphics" in build
+    assert "clean test installDist" in build
+    assert "--compress=zip-6" in build
+    assert "verify_java_core_bridge.py" in build
+    assert "--external-models-enabled" in build
     assert "<string>9</string>" in plist
+
+
+def test_macos_app_launches_bundled_java_policy_and_shows_safe_fallback() -> None:
+    source = SWIFT_SOURCE.read_text(encoding="utf-8")
+
+    assert 'environment["RND_WORKBENCH_JAVA_CORE_JAVA"]' in source
+    assert 'environment["RND_WORKBENCH_JAVA_CORE_LIB_DIR"]' in source
+    assert 'environment["RND_WORKBENCH_JAVA_CORE_EXTERNAL_MODELS_ENABLED"] = "1"' in source
+    assert "javaCorePolicyConfigured" in source
+    assert "javaCorePolicyReady" in source
+    assert 'return "Java 21 · активна"' in source
+    assert 'return "Встроенная резервная политика"' in source
+    assert '"Общая политика маршрутизации"' in source
+    assert ".help(controller.routeStatusHelp)" in source
+
+
+def test_macos_ci_builds_jlink_and_verifies_public_external_route() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "macOS Swift and Java policy boundary" in workflow
+    assert "runs-on: macos-14" in workflow
+    assert "swiftc -parse macos/VoiceAssistantApp.swift" in workflow
+    assert "tests/test_macos_contract.py tests/test_java_core_bridge.py" in workflow
+    assert "Build bounded Java policy runtime" in workflow
+    assert "--compress=zip-6" in workflow
+    assert "Verify macOS bundled-style public external policy contract" in workflow
+    assert "--external-models-enabled" in workflow
 
 
 def test_macos_app_supports_isolated_qa_profile_without_touching_user_data() -> None:

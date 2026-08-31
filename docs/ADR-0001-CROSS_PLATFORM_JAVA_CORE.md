@@ -147,16 +147,15 @@ Loopback transport остаётся допустимым будущим вари
 
 Ограничения:
 
-- Windows/Python bridge запускает Java core только для read-only routing;
-  Swift/macOS и connector action paths пока не подключены;
-- Windows QA artifact вырос из-за bundled `jlink` runtime и Java libraries;
+- macOS/Windows Python bridge запускает Java core только для read-only routing;
+  connector action paths пока не подключены;
+- обе desktop-сборки выросли из-за bundled `jlink` runtime и Java libraries;
 - версия схемы и совместимость процессов становятся отдельным контрактом;
 - SQLite journal не может атомарно коммитить транзакцию вместе с произвольным
   Jira/Kaiten/Confluence API; зависшие claims требуют connector reconciliation.
 
 ## План внедрения
 
-1. Подключить тот же metadata-only route gate в macOS/Swift path.
-2. Перевести preview/confirmation интеграционных действий на Java claim/result.
-3. Реализовать connector reconciliation для зависших claims до production writes.
-4. После пилотного soak-test удалить дублирующие политики из оболочек.
+1. Перевести preview/confirmation интеграционных действий на Java claim/result.
+2. Реализовать connector reconciliation для зависших claims до production writes.
+3. После пилотного soak-test удалить дублирующие политики из оболочек.

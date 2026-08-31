@@ -148,3 +148,21 @@ def test_java_core_client_times_out_without_exposing_peer_output(tmp_path: Path)
 def test_java_core_constants_match_distribution_entrypoint() -> None:
     assert JAVA_CORE_MAIN_CLASS == "com.rndworkbench.core.ipc.CoreIpcApplication"
     assert issubclass(JavaCoreProtocolError, RuntimeError)
+
+
+def test_environment_can_enable_separately_gated_public_external_route(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    java = tmp_path / "java"
+    java.write_text("", encoding="utf-8")
+    libraries = tmp_path / "lib"
+    libraries.mkdir()
+    monkeypatch.setenv("RND_WORKBENCH_JAVA_CORE_JAVA", str(java))
+    monkeypatch.setenv("RND_WORKBENCH_JAVA_CORE_LIB_DIR", str(libraries))
+    monkeypatch.setenv("RND_WORKBENCH_JAVA_CORE_EXTERNAL_MODELS_ENABLED", "true")
+
+    client = JavaCorePolicyClient.from_environment(tmp_path / "assistant.sqlite3")
+
+    assert client.configured is True
+    assert client._command_prefix[-1] == "--external-models-enabled"

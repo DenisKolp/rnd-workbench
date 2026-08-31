@@ -140,8 +140,9 @@ lease expiry нет, поскольку оно создало бы риск ду
 - `3` — недоступен runtime/journal/stdin;
 - `4` — ошибка записи `stdout`.
 
-Обязательный аргумент `--journal` задаёт отдельный SQLite-файл профиля. Windows
-Python backend уже запускает процесс для metadata-only `health.check` и
-`route.decide`; Electron получает только безопасную диагностику. Swift/macOS и
-connector action adapters пока не подключены и составляют следующие
-вертикальные инкременты.
+Обязательный аргумент `--journal` задаёт отдельный SQLite-файл профиля. macOS и
+Windows Python backend запускают процесс для metadata-only `health.check` и
+`route.decide`; Swift/Electron получают только безопасную диагностику. Публичный
+внешний маршрут на macOS дополнительно требует process opt-in, классификацию
+`PUBLIC` и explicit consent в каждом запросе. Connector action adapters пока не
+подключены и составляют следующий вертикальный инкремент.

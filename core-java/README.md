@@ -3,9 +3,9 @@
 Инкрементальный платформенно-независимый слой доменных политик RnD Workbench.
 Модуль не заменяет существующее приложение и не переносит ML inference в JVM.
 Версия компонента — `0.1.0-SNAPSHOT`; он разрабатывается в рамках продуктового
-milestone `0.9.1` и не является отдельным релизом. Windows Electron package уже
-использует его для read-only model routing, а остальные доменные контракты пока
-остаются следующими этапами миграции.
+milestone `0.9.1` и не является отдельным релизом. Windows Electron и macOS
+Swift packages уже используют его для read-only model routing, а остальные
+доменные контракты пока остаются следующими этапами миграции.
 
 ## Что уже зафиксировано кодом
 
@@ -66,14 +66,13 @@ gradle test
 
 Сборка настроена с `-Xlint:all -Werror`. Все 42 JUnit-теста прошли локально на
 JDK 21.0.12 и Gradle 9.7.1. Linux CI повторяет тесты и реальный Python ↔ Java
-golden contract; Windows CI собирает ограниченный `jlink` runtime, запускает
-тот же IPC probe и затем проверяет Java route gate из frozen Python backend.
+golden contract; macOS и Windows CI собирают ограниченные `jlink` runtime.
+macOS проверяет local/corporate/public-external маршруты, Windows затем запускает
+route gate из frozen Python backend.
 
 ## Следующий инкремент
 
-1. Подключить macOS-оболочку к Java route gate с тем же metadata-only
-   контрактом и видимым fallback.
-2. Перевести preview/confirmation интеграционных действий на Java claim/result.
-3. Реализовать reconciliation зависших `CLAIMED` действий до подключения
+1. Перевести preview/confirmation интеграционных действий на Java claim/result.
+2. Реализовать reconciliation зависших `CLAIMED` действий до подключения
    production-коннекторов Jira/Kaiten/Confluence/почты/календаря.
-4. После pilot soak-test удалить дублирующую Python routing policy.
+3. После pilot soak-test удалить дублирующую Python routing policy.

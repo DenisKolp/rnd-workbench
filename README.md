@@ -75,14 +75,15 @@ TTS остаются на устройстве; текстовый inference м�
   Whisper, LLM runtime или OmniVoice в JVM ухудшил бы переносимость моделей и
   добавил бы сериализацию в аудиотракт.
 - Java core имеет executable stdio JSONL 1.0, строгие схемы и атомарный
-  SQLite-журнал идемпотентности. Windows backend уже запускает его до первого
-  LLM-вызова и сверяет metadata-only решение о маршруте с Python-политикой;
-  prompt, транскрипты, документы и credentials через этот IPC не проходят.
-  Portable QA-сборка содержит ограниченный `jlink` runtime, а CI проверяет
-  Python ↔ Java golden contract и packaged route probe. При недоступности
+  SQLite-журнал идемпотентности. macOS и Windows backend запускают его до
+  первого LLM-вызова и сверяют metadata-only решение о фактическом маршруте с
+  Python-политикой; prompt, транскрипты, документы и credentials через этот IPC
+  не проходят. Обе сборки содержат ограниченный `jlink` runtime, а CI проверяет
+  Python ↔ Java golden contracts на Linux, macOS и Windows. При недоступности
   companion интерфейс явно показывает резервную Python-политику; несовпадение
-  решений блокирует запрос. macOS-адаптер и Java claim/result для реальных
-  внешних действий пока не подключены.
+  решений блокирует запрос. На macOS внешний маршрут дополнительно допускается
+  только для данных уровня `public` после явного выбора; Java claim/result для
+  реальных внешних действий пока не подключён.
 
 Точное решение и границы миграции описаны в
 [`docs/ADR-0001-CROSS_PLATFORM_JAVA_CORE.md`](docs/ADR-0001-CROSS_PLATFORM_JAVA_CORE.md),
@@ -102,10 +103,10 @@ TTS остаются на устройстве; текстовый inference м�
 
 ## Установка
 
-Нужны Homebrew, `uv`, CMake и PortAudio:
+Нужны Homebrew, `uv`, CMake, PortAudio, JDK 21 и Gradle:
 
 ```bash
-brew install cmake portaudio
+brew install cmake portaudio openjdk@21 gradle
 uv sync --python 3.12 --extra dev
 ```
 
@@ -328,8 +329,8 @@ TTS выводится блоками по 30 мс, поэтому подтве�
 uv run pytest
 ```
 
-Полный Python/UI-набор содержит **371 тест** и проходит локально; в него входят
-20 macOS и 56 Windows contract-тестов, а также Python ↔ Java golden contracts.
+Полный Python/UI-набор содержит **378 тестов** и проходит локально; в него входят
+22 macOS и 56 Windows contract-тестов, а также Python ↔ Java golden contracts.
 Отдельно проходят 42 JUnit-теста Java 21 core.
 Платформенные оговорки зафиксированы в `CURRENT_STATE.md`. Electron
 `node --check`, endpoint-canonicalization self-tests и строгая рекурсивная
