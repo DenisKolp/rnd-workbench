@@ -165,6 +165,30 @@ def test_dynamic_pilot_preflight_is_rendered_and_can_be_refreshed() -> None:
     assert 'id="pilotPreflightList"' in html
 
 
+def test_content_free_onboarding_routes_to_existing_windows_flows() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+    styles = (ROOT / "windows" / "electron" / "renderer" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function renderPilotOnboarding()" in renderer
+    assert "state.snapshot.pilot_onboarding" in renderer
+    assert "function performPilotOnboardingAction()" in renderer
+    for action_id in (
+        "review_preflight",
+        "start_voice",
+        "open_chat",
+        "show_meeting_import",
+        "prepare_briefing",
+    ):
+        assert f'actionId === "{action_id}"' in renderer
+    assert 'composer.value = "/briefing ";' in renderer
+    assert 'id="pilotOnboardingButton" type="button" hidden' in html
+    assert 'id="pilotOnboardingProgress"' in html
+    assert ".pilot-onboarding-card .secondary-button { width: 100%; min-height: 36px;" in styles
+
+
 def test_express_sync_control_is_conditional_and_uses_backend_contract() -> None:
     renderer = RENDERER.read_text(encoding="utf-8")
     html = HTML.read_text(encoding="utf-8")

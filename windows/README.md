@@ -1,7 +1,7 @@
 # RnD Workbench — Windows Electron pilot
 
 Версия Windows-компонента — **0.1.0-pilot**; она входит в общий продуктовый
-milestone **0.9.5**, но не обозначает готовую Windows-поставку.
+milestone **0.9.6**, но не обозначает готовую Windows-поставку.
 
 Это минимальная честная Windows-ветка для пилота на 30 сотрудниках. Клиент
 реализован **только на Electron**. Компактный голосовой виджет и полноразмерное
@@ -35,6 +35,7 @@ Faster-Whisper weights и loopback OmniVoice-Fast server Python-мост чес�
 | Jira / Kaiten / Confluence / почта / календарь | Не подключено | Нужны корпоративные API, OAuth/SSO и тестовые стенды |
 | Voice-ready portable QA artifact | Проверено в CI | Frozen backend импортирует Faster-Whisper, CTranslate2 и Tokenizers, запускает bundled Java route gate и action journal probe; artifact хранится семь дней |
 | Preflight устройства | Готово в исходниках | 11 content-free проверок показывают реальные блокеры, предупреждения и неподтверждённые SLO; результат можно обновить в полном окне |
+| Быстрый старт | Готово в исходниках | Один content-free следующий шаг ведёт через первый результат, голос, импорт встречи и сводку; блок скрыт в свёрнутой диагностике |
 | Подписанный установщик | Не проверено | Windows CI создаёт unsigned portable artifact; веса Whisper, OmniVoice server, подпись и hardware QA не входят в эту проверку |
 
 Статусы «в исходниках» означают, что код и автоматические контрактные тесты

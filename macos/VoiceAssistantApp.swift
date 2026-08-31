@@ -1000,6 +1000,13 @@ final class BackendController: ObservableObject {
     @Published private(set) var pilotMetrics: [String: Any] = [:]
     @Published private(set) var pilotPreflightOverall = "limited"
     @Published private(set) var pilotPreflightChecks: [PilotPreflightCheckRecord] = []
+    @Published private(set) var pilotOnboardingStatus = "active"
+    @Published private(set) var pilotOnboardingTitle = "Быстрый старт"
+    @Published private(set) var pilotOnboardingDetail = "Определяю следующий полезный шаг."
+    @Published private(set) var pilotOnboardingActionID = ""
+    @Published private(set) var pilotOnboardingActionLabel = ""
+    @Published private(set) var pilotOnboardingCompleted = 0
+    @Published private(set) var pilotOnboardingTotal = 4
     @Published var dashboard = DashboardStats()
     @Published var modelName = "Локальная MLX"
     @Published var composerDraft = ""
@@ -1083,6 +1090,10 @@ final class BackendController: ObservableObject {
             return "Определяю готовность этой установки к пилоту."
         }
         return "Проверок: \(pilotPreflightChecks.count) · блокирует: \(blockers) · требует внимания: \(attention)"
+    }
+
+    var pilotOnboardingProgressLabel: String {
+        "\(min(pilotOnboardingCompleted, pilotOnboardingTotal)) из \(pilotOnboardingTotal)"
     }
 
     var pilotMetricsSummaryLabel: String {
@@ -2218,6 +2229,28 @@ final class BackendController: ObservableObject {
         send(["command": "pilot_preflight"])
     }
 
+    func performPilotOnboardingAction() {
+        switch pilotOnboardingActionID {
+        case "review_preflight":
+            runPilotPreflight()
+        case "start_voice":
+            UserDefaults.standard.set(CompactMode.voice.rawValue, forKey: "rnd.compact.mode")
+            presentCompact()
+        case "open_chat":
+            UserDefaults.standard.set(CompactMode.chat.rawValue, forKey: "rnd.compact.mode")
+            presentCompact()
+        case "show_meeting_import":
+            navigationRequest = AppNavigationRequest(section: .meetings)
+            presentFull()
+        case "prepare_briefing":
+            composerDraft = "/briefing "
+            UserDefaults.standard.set(CompactMode.chat.rawValue, forKey: "rnd.compact.mode")
+            presentCompact()
+        default:
+            break
+        }
+    }
+
     func setPilotUsefulnessRating(_ rating: Int) {
         guard (1...5).contains(rating) else { return }
         send([
@@ -2237,6 +2270,18 @@ final class BackendController: ObservableObject {
                 detail: string(check, "detail"),
                 action: string(check, "action")
             )
+        }
+    }
+
+    private func applyPilotOnboarding(_ onboarding: [String: Any]) {
+        pilotOnboardingStatus = string(onboarding, "status")
+        pilotOnboardingTitle = string(onboarding, "title")
+        pilotOnboardingDetail = string(onboarding, "detail")
+        pilotOnboardingActionID = string(onboarding, "action_id")
+        pilotOnboardingActionLabel = string(onboarding, "action_label")
+        if let progress = onboarding["progress"] as? [String: Any] {
+            pilotOnboardingCompleted = max(0, int(progress["completed"]))
+            pilotOnboardingTotal = max(1, int(progress["total"]))
         }
     }
 
@@ -2981,6 +3026,9 @@ final class BackendController: ObservableObject {
         pilotMetrics = (data["pilot_metrics"] as? [String: Any]) ?? [:]
         if let report = data["pilot_preflight"] as? [String: Any] {
             applyPilotPreflight(report)
+        }
+        if let onboarding = data["pilot_onboarding"] as? [String: Any] {
+            applyPilotOnboarding(onboarding)
         }
         if let connector = data["express_connector"] as? [String: Any] {
             expressConnectorConfigured = bool(connector["configured"])
@@ -5587,6 +5635,34 @@ struct SettingsView: View {
                 }
             }
             Section("Качество и готовность пилота") {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(controller.pilotOnboardingTitle)
+                                .font(.callout.weight(.semibold))
+                            Spacer()
+                            Text(controller.pilotOnboardingProgressLabel)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        ProgressView(
+                            value: Double(controller.pilotOnboardingCompleted),
+                            total: Double(controller.pilotOnboardingTotal)
+                        )
+                        Text(controller.pilotOnboardingDetail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if !controller.pilotOnboardingActionLabel.isEmpty {
+                            Button(controller.pilotOnboardingActionLabel) {
+                                controller.performPilotOnboardingAction()
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    Label("Быстрый старт", systemImage: "figure.walk.motion")
+                }
                 LabeledContent(
                     "Измерений за 14 дней",
                     value: "\(controller.pilotMetricSampleCount)"

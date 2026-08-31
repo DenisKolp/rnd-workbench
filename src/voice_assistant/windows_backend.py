@@ -47,6 +47,7 @@ from .java_core import (
 from .integrations import SafeIntegrationHub
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
 from .preflight import PilotPreflightInputs, build_pilot_preflight
+from .onboarding import build_pilot_onboarding
 from .store import AssistantStore, new_id
 from .text import SentenceChunker, SpeechExcerptBuilder, normalize_for_omnivoice_speech
 
@@ -2864,6 +2865,10 @@ class WindowsPilotBackend:
         )
         snapshot["pilot_preflight"] = self._build_pilot_preflight(
             snapshot.get("pilot_metrics")
+        )
+        snapshot["pilot_onboarding"] = build_pilot_onboarding(
+            snapshot["pilot_preflight"],
+            snapshot["pilot_metrics"].get("usage", {}),
         )
         self.emitter.emit("snapshot", data=snapshot)
 

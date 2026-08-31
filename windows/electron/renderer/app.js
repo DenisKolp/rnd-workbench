@@ -1105,6 +1105,65 @@ function renderPilotPreflight() {
   }
 }
 
+function renderPilotOnboarding() {
+  const onboarding = state.snapshot.pilot_onboarding || {};
+  const progress = onboarding.progress || {};
+  const completed = Math.max(0, Number(progress.completed || 0));
+  const total = Math.max(1, Number(progress.total || 4));
+  byId("pilotOnboardingTitle").textContent = String(onboarding.title || "Быстрый старт");
+  byId("pilotOnboardingDetail").textContent = String(
+    onboarding.detail || "Определяю следующий полезный шаг.",
+  );
+  byId("pilotOnboardingProgress").textContent = `${Math.min(completed, total)} из ${total}`;
+  const button = byId("pilotOnboardingButton");
+  const actionId = String(onboarding.action_id || "");
+  button.dataset.actionId = actionId;
+  button.textContent = String(onboarding.action_label || "Продолжить");
+  button.hidden = !actionId;
+  byId("pilotOnboardingCard").dataset.status = String(onboarding.status || "active");
+}
+
+function activateWindowMode(mode) {
+  if (state.mode === mode) return;
+  setMode(mode);
+  window.rndWorkbench.setWindowMode(mode);
+}
+
+function performPilotOnboardingAction() {
+  const actionId = String(byId("pilotOnboardingButton").dataset.actionId || "");
+  if (actionId === "review_preflight") {
+    sendCommand("pilot_preflight");
+    return;
+  }
+  if (actionId === "start_voice") {
+    activateWindowMode("compact");
+    setCompactView("voice");
+    return;
+  }
+  if (actionId === "open_chat") {
+    activateWindowMode("compact");
+    setCompactView("chat");
+    byId("composerInput").focus();
+    return;
+  }
+  if (actionId === "show_meeting_import") {
+    activateWindowMode("full");
+    const diagnostics = byId("pilotOnboardingButton").closest("details");
+    if (diagnostics) diagnostics.open = false;
+    document.querySelector(".meeting-import-card")?.scrollIntoView({ block: "nearest" });
+    byId("meetingTranscriptImportButton").focus();
+    return;
+  }
+  if (actionId === "prepare_briefing") {
+    activateWindowMode("compact");
+    setCompactView("chat");
+    const composer = byId("composerInput");
+    composer.value = "/briefing ";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    composer.focus();
+  }
+}
+
 function renderSnapshot() {
   renderMessages();
   renderTasks();
@@ -1113,6 +1172,7 @@ function renderSnapshot() {
   renderVoiceCapability();
   renderPilotMetrics();
   renderPilotPreflight();
+  renderPilotOnboarding();
   const express = state.snapshot.express_connector || {};
   const expressButton = byId("expressSyncButton");
   expressButton.hidden = !Boolean(express.configured);
@@ -1582,6 +1642,7 @@ byId("synapseImportButton").addEventListener("click", () => void chooseSynapsePa
 byId("expressSyncButton").addEventListener("click", syncExpressMeetings);
 byId("exportPilotMetricsButton").addEventListener("click", () => void exportPilotMetrics());
 byId("pilotPreflightButton").addEventListener("click", () => sendCommand("pilot_preflight"));
+byId("pilotOnboardingButton").addEventListener("click", performPilotOnboardingAction);
 byId("pilotUsefulnessRating").addEventListener("change", (event) => {
   const rating = Number(event.currentTarget.value);
   if (Number.isInteger(rating) && rating >= 1 && rating <= 5) {

@@ -265,6 +265,11 @@ body[data-mode="compact"][data-compact-view="chat"] .chat-card { min-height: 0; 
 .pilot-diagnostics-content .pilot-metrics-card,
 .pilot-diagnostics-content .preflight-card { margin: 0; }
 .pilot-diagnostics-content .architecture-note { margin-top: 0; }
+.pilot-onboarding-card { display: grid; gap: 7px; padding: 12px; color: var(--white); border-radius: 12px; background: linear-gradient(145deg, var(--blue), #0c4f90); }
+.pilot-onboarding-card .pilot-metrics-heading strong { color: var(--white); }
+.pilot-onboarding-card .pilot-metrics-heading span { color: var(--white); background: rgba(255, 255, 255, 0.17); }
+.pilot-onboarding-card p { margin: 0; color: rgba(255, 255, 255, 0.82); font-size: 9px; line-height: 1.45; }
+.pilot-onboarding-card .secondary-button { width: 100%; min-height: 36px; color: var(--blue); background: var(--white); white-space: normal; }
 
 dialog { width: min(490px, calc(100vw - 32px)); max-height: calc(100vh - 20px); padding: 0; overflow: hidden; color: var(--ink); border: 0; border-radius: 17px; box-shadow: 0 24px 75px rgba(0, 25, 55, 0.28); }
 dialog::backdrop { background: rgba(0, 30, 64, 0.42); backdrop-filter: blur(3px); }

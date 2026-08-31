@@ -37,6 +37,7 @@ from .java_core import (
 from .integrations import SafeIntegrationHub
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
 from .preflight import PilotPreflightInputs, build_pilot_preflight
+from .onboarding import build_pilot_onboarding
 from .store import AssistantStore, new_id
 from .synapse import SynapseImportInProgressError, SynapseRepairRequiredError
 from .text import concise_speech_text
@@ -3479,6 +3480,10 @@ class UIBackend:
         )
         snapshot["pilot_preflight"] = self._build_pilot_preflight(
             snapshot.get("pilot_metrics")
+        )
+        snapshot["pilot_onboarding"] = build_pilot_onboarding(
+            snapshot["pilot_preflight"],
+            snapshot["pilot_metrics"].get("usage", {}),
         )
         snapshot["model"] = (
             f"{runtime['model']} · "

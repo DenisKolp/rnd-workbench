@@ -183,6 +183,7 @@ def test_stop_session_cancels_current_answer(tmp_path) -> None:
 
 
 def test_macos_pilot_preflight_uses_loaded_runtime_without_work_content(
+    capsys,
     tmp_path,
 ) -> None:
     backend = UIBackend(
@@ -212,6 +213,13 @@ def test_macos_pilot_preflight_uses_loaded_runtime_without_work_content(
     assert statuses["tts"] == "pass"
     assert statuses["microphone"] == "pass"
     assert statuses["voice_slo"] == "unverified"
+
+    backend.emit_snapshot()
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    snapshot = [event for event in events if event["type"] == "snapshot"][-1]["data"]
+    assert snapshot["pilot_onboarding"]["stage"] == "first_voice_result"
+    assert snapshot["pilot_onboarding"]["action_id"] == "start_voice"
+    assert snapshot["pilot_onboarding"]["content_transmitted"] is False
 
 
 def test_macos_express_sync_persists_checkpoint_only_after_success(

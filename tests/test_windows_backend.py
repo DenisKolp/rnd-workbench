@@ -1151,6 +1151,17 @@ def test_windows_pilot_preflight_is_dynamic_content_free_and_honest(tmp_path) ->
     assert statuses["corporate_connectors"] == "warn"
     assert "НЕ СОХРАНЯТЬ" not in json.dumps(result, ensure_ascii=False)
 
+    backend.emit_snapshot()
+    snapshot = [item for item in emitter.events if item["type"] == "snapshot"][-1][
+        "data"
+    ]
+    assert snapshot["pilot_onboarding"]["stage"] == "first_voice_result"
+    assert snapshot["pilot_onboarding"]["action_id"] == "start_voice"
+    assert snapshot["pilot_onboarding"]["content_transmitted"] is False
+    assert "НЕ СОХРАНЯТЬ" not in json.dumps(
+        snapshot["pilot_onboarding"], ensure_ascii=False
+    )
+
 
 def test_windows_express_sync_persists_checkpoint_and_updates_preflight(tmp_path) -> None:
     emitter = CapturingEmitter()
