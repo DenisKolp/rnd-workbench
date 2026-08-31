@@ -1163,6 +1163,27 @@ def test_windows_pilot_preflight_is_dynamic_content_free_and_honest(tmp_path) ->
     )
 
 
+def test_windows_backend_marks_pilot_session_clean_only_on_quit(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        core_policy=FakeCorePolicy(),
+    )
+
+    backend._begin_pilot_session()
+    active = backend.store.pilot_usage_summary(platform="windows")
+    backend.handle({"command": "quit"})
+    finished = backend.store.pilot_usage_summary(platform="windows")
+
+    assert active["sessions"] == 1
+    assert active["observed_session_exits"] == 0
+    assert active["crash_free_session_rate"] is None
+    assert finished["clean_session_exits"] == 1
+    assert finished["unclean_session_exits"] == 0
+    assert finished["crash_free_session_rate"] == 1.0
+
+
 def test_windows_express_sync_persists_checkpoint_and_updates_preflight(tmp_path) -> None:
     emitter = CapturingEmitter()
     intake = FakeExpressIntake()

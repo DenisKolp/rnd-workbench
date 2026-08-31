@@ -222,6 +222,29 @@ def test_macos_pilot_preflight_uses_loaded_runtime_without_work_content(
     assert snapshot["pilot_onboarding"]["content_transmitted"] is False
 
 
+def test_macos_backend_marks_pilot_session_clean_only_on_quit(capsys, tmp_path) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    backend = UIBackend(
+        Config.defaults(),
+        EventEmitter(),
+        store,
+        core_policy=FakeCorePolicy(),
+    )
+
+    backend._begin_pilot_session()
+    active = store.pilot_usage_summary(platform="macos")
+    backend.handle({"command": "quit"})
+    finished = store.pilot_usage_summary(platform="macos")
+
+    assert active["sessions"] == 1
+    assert active["observed_session_exits"] == 0
+    assert active["crash_free_session_rate"] is None
+    assert finished["clean_session_exits"] == 1
+    assert finished["unclean_session_exits"] == 0
+    assert finished["crash_free_session_rate"] == 1.0
+    capsys.readouterr()
+
+
 def test_macos_express_sync_persists_checkpoint_only_after_success(
     capsys,
     tmp_path,

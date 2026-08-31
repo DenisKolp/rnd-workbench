@@ -168,6 +168,16 @@ def test_macos_content_free_onboarding_routes_to_existing_product_flows() -> Non
     assert "controller.performPilotOnboardingAction()" in source
 
 
+def test_macos_full_diagnostics_show_content_free_session_reliability() -> None:
+    source = SWIFT_SOURCE.read_text(encoding="utf-8")
+
+    assert 'pilotUsage["observed_session_exits"]' in source
+    assert 'pilotUsage["clean_session_exits"]' in source
+    assert 'pilotUsage["crash_free_session_rate"]' in source
+    assert "штатных завершений %.1f%% (%d/%d)" in source
+    assert "надёжность: ожидает завершений" in source
+
+
 def test_macos_meeting_sync_is_visible_only_for_configured_express_intake() -> None:
     source = SWIFT_SOURCE.read_text(encoding="utf-8")
 
@@ -412,7 +422,7 @@ def test_macos_build_links_global_input_frameworks_and_advances_build_number() -
     assert "--compress=zip-6" in build
     assert "verify_java_core_bridge.py" in build
     assert "--external-models-enabled" in build
-    assert "<string>14</string>" in plist
+    assert "<string>15</string>" in plist
 
 
 def test_macos_app_launches_bundled_java_policy_and_shows_safe_fallback() -> None:

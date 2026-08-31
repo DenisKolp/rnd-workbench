@@ -152,6 +152,45 @@ def test_pilot_usage_is_daily_content_free_and_measures_first_value(tmp_path) ->
     assert "source" not in serialized_rows
 
 
+def test_pilot_session_lifecycle_is_idempotent_content_free_and_detects_unclean_exit(
+    tmp_path,
+) -> None:
+    store = make_store(tmp_path)
+
+    first = store.begin_pilot_session("macos", "run-one")
+    duplicate = store.begin_pilot_session("macos", "run-one")
+    second = store.begin_pilot_session("macos", "run-two")
+    assert store.finish_pilot_session("macos", "run-two") is True
+    assert store.finish_pilot_session("macos", "run-two") is False
+
+    summary = store.pilot_usage_summary(platform="macos")
+    exported = json.dumps(store.pilot_metrics_summary(platform="macos"), ensure_ascii=False)
+    lifecycle = store._rows("SELECT platform, run_id, state FROM pilot_session_lifecycle")
+
+    assert first == {"started": True, "previous_unclean": False}
+    assert duplicate == {"started": False, "previous_unclean": False}
+    assert second == {"started": True, "previous_unclean": True}
+    assert summary["schema_version"] == 2
+    assert summary["sessions"] == 2
+    assert summary["observed_session_exits"] == 2
+    assert summary["clean_session_exits"] == 1
+    assert summary["unclean_session_exits"] == 1
+    assert summary["crash_free_session_rate"] == 0.5
+    assert summary["criteria"]["crash_free_at_least_99_percent"] is False
+    assert summary["criteria"]["crash_free_sample_sufficient"] is False
+    assert lifecycle == [{"platform": "macos", "run_id": "run-two", "state": "clean"}]
+    assert "run-one" not in exported
+    assert "run-two" not in exported
+    assert "run_id" not in exported
+
+
+def test_pilot_session_lifecycle_rejects_free_form_run_identifiers(tmp_path) -> None:
+    store = make_store(tmp_path)
+
+    with pytest.raises(ValueError, match="идентификатор"):
+        store.begin_pilot_session("windows", "secret project/customer")
+
+
 def test_pilot_usage_rejects_free_form_events_and_feedback(tmp_path) -> None:
     store = make_store(tmp_path)
 

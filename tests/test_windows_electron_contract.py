@@ -76,7 +76,7 @@ def test_voice_ui_is_capability_gated_and_uses_bounded_pcm_contract() -> None:
     assert 'sendCommand("voice_session_stop"' in source
     assert "performance.now() < this.calibrationUntil && !state.speaking" in source
     assert "if (this.candidateMs >= 120) this.beginUtterance(false)" in source
-    assert "Faster-Whisper" in html
+    assert "Faster-Whisper" in source
     assert (
         'body[data-mode="compact"][data-compact-view="voice"] .chat-card { display: none; }'
         in styles
@@ -189,6 +189,16 @@ def test_content_free_onboarding_routes_to_existing_windows_flows() -> None:
     assert ".pilot-onboarding-card .secondary-button { width: 100%; min-height: 36px;" in styles
 
 
+def test_windows_full_diagnostics_show_content_free_session_reliability() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
+
+    assert "usage.observed_session_exits" in renderer
+    assert "usage.clean_session_exits" in renderer
+    assert "usage.crash_free_session_rate" in renderer
+    assert "штатных завершений:" in renderer
+    assert "надёжность: ожидает завершений" in renderer
+
+
 def test_express_sync_control_is_conditional_and_uses_backend_contract() -> None:
     renderer = RENDERER.read_text(encoding="utf-8")
     html = HTML.read_text(encoding="utf-8")
@@ -228,6 +238,21 @@ def test_compact_controls_and_settings_remain_usable_at_410_by_420() -> None:
     assert '<div class="dialog-fields">' in html
     assert 'dialog { width: min(490px, calc(100vw - 32px)); max-height: calc(100vh - 20px);' in styles
     assert '.dialog-fields { display: grid; gap: 13px; min-height: 0;' in styles
+    assert "Полный ответ — в чате. Говорите, чтобы перебить. F8 — диктовка." in html
+    assert 'font-size: 11px; line-height: 1.35;' in styles
+
+
+def test_full_window_wraps_long_task_titles_and_preserves_route_label() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
+    styles = (ROOT / "windows" / "electron" / "renderer" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'compact ? "полностью локально" : "локальная модель · данные на устройстве"' in renderer
+    assert 'compact ? "корпоративный контур" : "корпоративная модель · защищённый API"' in renderer
+    assert "overflow-wrap: anywhere" in styles
+    assert "white-space: normal" in styles
+    assert 'body[data-mode="full"] .brand-copy span { max-width: 300px; font-size: 10px; }' in styles
     assert '.compact-switch button { min-width: 88px; min-height: 32px;' in styles
     assert '.mode-button { min-height: 32px;' in styles
 

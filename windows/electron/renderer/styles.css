@@ -165,7 +165,7 @@ body[data-voice-state="speaking"] .voice-visual span { animation-duration: 0.48s
 .mic-button[aria-pressed="true"] { background: linear-gradient(145deg, #e30613, #a9000a); }
 .mic-button[aria-pressed="true"] .mic-glyph { color: var(--red); }
 .mic-glyph { display: grid; place-items: center; width: 27px; height: 27px; color: var(--blue); border-radius: 50%; background: var(--white); font-size: 8px; }
-.voice-note { position: relative; z-index: 1; max-width: 330px; margin: 7px auto 0; color: var(--muted); font-size: 9px; line-height: 1.35; }
+.voice-note { position: relative; z-index: 1; max-width: 330px; margin: 7px auto 0; color: var(--muted); font-size: 11px; line-height: 1.35; }
 
 .chat-card { min-height: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--white); box-shadow: 0 12px 35px rgba(16, 42, 67, 0.08); }
 body[data-mode="compact"][data-compact-view="voice"] .chat-card { display: none; }
@@ -205,7 +205,7 @@ body[data-mode="compact"][data-compact-view="chat"] .chat-card { min-height: 0; 
 .task-list { flex: 1; min-height: 0; overflow: auto; margin-top: 10px; }
 .task-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: center; width: 100%; margin-bottom: 4px; padding: 0 4px 0 0; color: #d9e8f6; border: 0; border-radius: 9px; background: transparent; text-align: left; font-size: 10px; }
 .task-row:hover, .task-row.active { color: var(--white); background: rgba(64, 139, 204, 0.4); }
-.task-open { width: 100%; overflow: hidden; padding: 9px 4px 9px 10px; color: inherit; border: 0; background: transparent; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.task-open { width: 100%; min-height: 32px; overflow-wrap: anywhere; padding: 8px 4px 8px 10px; color: inherit; border: 0; background: transparent; text-align: left; line-height: 1.25; white-space: normal; }
 .delete-task { padding: 2px 4px; color: #c9dced; border: 0; background: transparent; font-size: 13px; }
 .delete-task:hover { color: #fff; }
 .sidebar-foot { display: flex; align-items: center; gap: 7px; padding: 11px 3px 0; color: #abc8e4; border-top: 1px solid rgba(255, 255, 255, 0.11); font-size: 9px; }
@@ -295,6 +295,7 @@ body[data-mode="compact"] dialog select { padding: 8px 9px; }
 body[data-mode="full"] { border-radius: 10px; }
 body[data-mode="full"] .app-shell { grid-template-rows: 68px 1fr; }
 body[data-mode="full"] .titlebar { border-radius: 9px 9px 0 0; }
+body[data-mode="full"] .brand-copy span { max-width: 300px; font-size: 10px; }
 body[data-mode="full"] .workspace-grid { grid-template-columns: 210px minmax(0, 1fr) 275px; }
 body[data-mode="full"] .full-only { display: block !important; }
 body[data-mode="full"] .sidebar,

@@ -14,6 +14,7 @@ PILOT_SLO_METRICS = (
     "input_clipping_ratio",
     "output_clipping_ratio",
 )
+PILOT_RELIABILITY_MIN_SESSIONS = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +86,47 @@ def _voice_slo_check(summary: Mapping[str, Any] | None) -> dict[str, str]:
     )
 
 
+def _session_reliability_check(
+    summary: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    usage = summary.get("usage") if isinstance(summary, Mapping) else None
+    if not isinstance(usage, Mapping):
+        usage = {}
+    try:
+        observed = max(0, int(usage.get("observed_session_exits") or 0))
+    except (TypeError, ValueError):
+        observed = 0
+    try:
+        rate = float(usage.get("crash_free_session_rate"))
+    except (TypeError, ValueError):
+        rate = -1.0
+    if observed < PILOT_RELIABILITY_MIN_SESSIONS or not 0.0 <= rate <= 1.0:
+        return _check(
+            "session_reliability",
+            "Надёжность сессий",
+            "unverified",
+            (
+                f"Учтено завершений: {observed} из "
+                f"{PILOT_RELIABILITY_MIN_SESSIONS}, необходимых для оценки."
+            ),
+            "Завершайте приложение штатно; оборванный процесс будет учтён при следующем запуске.",
+        )
+    if rate < 0.99:
+        return _check(
+            "session_reliability",
+            "Надёжность сессий",
+            "block",
+            f"Штатно завершено {rate * 100:.1f}% из {observed} учтённых сессий.",
+            "Проверьте причины оборванных процессов перед пилотной поставкой.",
+        )
+    return _check(
+        "session_reliability",
+        "Надёжность сессий",
+        "pass",
+        f"Штатно завершено {rate * 100:.1f}% из {observed} учтённых сессий.",
+    )
+
+
 def build_pilot_preflight(inputs: PilotPreflightInputs) -> dict[str, Any]:
     """Build a deterministic, content-free readiness report for one device."""
 
@@ -149,6 +191,7 @@ def build_pilot_preflight(inputs: PilotPreflightInputs) -> dict[str, Any]:
             else "",
         ),
         _voice_slo_check(inputs.metrics_summary),
+        _session_reliability_check(inputs.metrics_summary),
         _check(
             "java_policy",
             "Политика маршрутизации Java 21",
@@ -235,6 +278,7 @@ def build_pilot_preflight(inputs: PilotPreflightInputs) -> dict[str, Any]:
 
 
 __all__ = [
+    "PILOT_RELIABILITY_MIN_SESSIONS",
     "PILOT_SLO_METRICS",
     "PilotPreflightInputs",
     "build_pilot_preflight",

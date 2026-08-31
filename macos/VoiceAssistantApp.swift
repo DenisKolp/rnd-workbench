@@ -1061,6 +1061,9 @@ final class BackendController: ObservableObject {
         let voiceTurns = int(pilotUsage["voice_turns"])
         let meetingImports = int(pilotUsage["meeting_imports"])
         let meetingBriefings = int(pilotUsage["meeting_briefings"])
+        let observedExits = int(pilotUsage["observed_session_exits"])
+        let cleanExits = int(pilotUsage["clean_session_exits"])
+        let crashFreeRate = number(pilotUsage["crash_free_session_rate"])
         let firstValue = number(pilotUsage["first_value_seconds"])
         var parts = [
             "активных дней: \(pilotActiveDays)",
@@ -1069,6 +1072,16 @@ final class BackendController: ObservableObject {
         ]
         if meetingImports > 0 { parts.append("встреч импортировано: \(meetingImports)") }
         if meetingBriefings > 0 { parts.append("брифингов: \(meetingBriefings)") }
+        if observedExits > 0, let crashFreeRate {
+            parts.append(String(
+                format: "штатных завершений %.1f%% (%d/%d)",
+                crashFreeRate * 100,
+                cleanExits,
+                observedExits
+            ))
+        } else {
+            parts.append("надёжность: ожидает завершений")
+        }
         if let firstValue { parts.append(String(format: "первый результат %.1f мин", firstValue / 60)) }
         return parts.joined(separator: " · ")
     }

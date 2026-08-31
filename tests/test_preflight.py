@@ -26,7 +26,11 @@ def _inputs(**overrides):  # noqa: ANN003, ANN201
                     "input_clipping_ratio",
                     "output_clipping_ratio",
                 )
-            }
+            },
+            "usage": {
+                "observed_session_exits": 20,
+                "crash_free_session_rate": 1.0,
+            },
         },
     }
     values.update(overrides)
@@ -37,7 +41,7 @@ def test_complete_preflight_is_ready_and_content_free() -> None:
     result = build_pilot_preflight(_inputs())
 
     assert result["overall"] == "ready"
-    assert result["counts"] == {"pass": 11, "warn": 0, "block": 0, "unverified": 0}
+    assert result["counts"] == {"pass": 12, "warn": 0, "block": 0, "unverified": 0}
     assert result["content_transmitted"] is False
     assert all(set(check) == {"id", "title", "status", "detail", "action"} for check in result["checks"])
 
@@ -84,6 +88,41 @@ def test_voice_slo_requires_five_sample_aggregate_and_fails_honestly() -> None:
     assert insufficient_check["status"] == "unverified"
     assert failing["overall"] == "blocked"
     assert failing_check["status"] == "block"
+
+
+def test_session_reliability_requires_twenty_exits_and_blocks_below_99_percent() -> None:
+    insufficient = build_pilot_preflight(
+        _inputs(
+            metrics_summary={
+                "metrics": _inputs().metrics_summary["metrics"],
+                "usage": {
+                    "observed_session_exits": 19,
+                    "crash_free_session_rate": 1.0,
+                },
+            }
+        )
+    )
+    failing = build_pilot_preflight(
+        _inputs(
+            metrics_summary={
+                "metrics": _inputs().metrics_summary["metrics"],
+                "usage": {
+                    "observed_session_exits": 20,
+                    "crash_free_session_rate": 0.95,
+                },
+            }
+        )
+    )
+
+    insufficient_check = next(
+        check for check in insufficient["checks"] if check["id"] == "session_reliability"
+    )
+    failing_check = next(
+        check for check in failing["checks"] if check["id"] == "session_reliability"
+    )
+    assert insufficient_check["status"] == "unverified"
+    assert failing_check["status"] == "block"
+    assert failing["overall"] == "blocked"
 
 
 def test_store_health_check_has_no_path_or_content(tmp_path) -> None:

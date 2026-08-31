@@ -140,6 +140,7 @@ class UIBackend:
         self._restore_llm_runtime()
 
     def load(self) -> None:
+        self._begin_pilot_session()
         java_ready = self._core_policy.start()
         java_diagnostics = self._core_policy.diagnostics()
         self.emitter.emit(
@@ -190,7 +191,6 @@ class UIBackend:
             detail=runtime["detail"],
         )
         self.emitter.emit("ready")
-        self._record_pilot_usage("app_session_started")
         self.emit_snapshot()
         self.automation_thread = threading.Thread(
             target=self._automation_loop,
@@ -676,6 +676,7 @@ class UIBackend:
             self.cancel_dictation()
             self.stop_session()
             self._core_policy.close()
+            self._finish_pilot_session()
         else:
             self.emitter.emit("error", message=f"Неизвестная команда: {name}")
 
@@ -1642,6 +1643,37 @@ class UIBackend:
                 "diagnostic",
                 component="pilot_usage",
                 check="store_failed",
+                measured=True,
+                error_type=type(exc).__name__,
+            )
+
+    def _begin_pilot_session(self) -> None:
+        try:
+            result = self.store.begin_pilot_session("macos", self._pilot_session_id)
+            if result["previous_unclean"]:
+                self.emitter.emit(
+                    "diagnostic",
+                    component="session_reliability",
+                    check="previous_exit_unclean",
+                    measured=True,
+                )
+        except Exception as exc:
+            self.emitter.emit(
+                "diagnostic",
+                component="session_reliability",
+                check="begin_failed",
+                measured=True,
+                error_type=type(exc).__name__,
+            )
+
+    def _finish_pilot_session(self) -> None:
+        try:
+            self.store.finish_pilot_session("macos", self._pilot_session_id)
+        except Exception as exc:
+            self.emitter.emit(
+                "diagnostic",
+                component="session_reliability",
+                check="finish_failed",
                 measured=True,
                 error_type=type(exc).__name__,
             )

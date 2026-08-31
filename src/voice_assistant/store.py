@@ -18,7 +18,7 @@ from uuid import uuid4
 from .automation import next_run
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 PILOT_METRIC_UNITS = {
     "listen_ready_seconds": "seconds",
@@ -60,6 +60,8 @@ PILOT_METRIC_MAX_ROWS = 20_000
 PILOT_USAGE_EVENTS = frozenset(
     {
         "app_session_started",
+        "app_session_clean_exit",
+        "app_session_unclean_exit",
         "voice_turn_completed",
         "text_turn_completed",
         "dictation_completed",
@@ -67,7 +69,14 @@ PILOT_USAGE_EVENTS = frozenset(
         "meeting_briefing_prepared",
     }
 )
-PILOT_USAGE_USER_EVENTS = frozenset(PILOT_USAGE_EVENTS - {"app_session_started"})
+PILOT_USAGE_SESSION_EVENTS = frozenset(
+    {
+        "app_session_started",
+        "app_session_clean_exit",
+        "app_session_unclean_exit",
+    }
+)
+PILOT_USAGE_USER_EVENTS = frozenset(PILOT_USAGE_EVENTS - PILOT_USAGE_SESSION_EVENTS)
 PILOT_USAGE_FIRST_VALUE_EVENTS = frozenset(
     {
         "voice_turn_completed",
@@ -567,6 +576,12 @@ class AssistantStore:
             started_at TEXT NOT NULL,
             first_value_seconds REAL
                 CHECK(first_value_seconds IS NULL OR first_value_seconds >= 0)
+        );
+        CREATE TABLE IF NOT EXISTS pilot_session_lifecycle (
+            platform TEXT PRIMARY KEY
+                CHECK(platform IN ('macos', 'windows', 'linux')),
+            run_id TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('active', 'clean'))
         );
         CREATE TABLE IF NOT EXISTS pilot_feedback (
             platform TEXT PRIMARY KEY
@@ -4742,6 +4757,165 @@ class AssistantStore:
             raise ValueError("Неизвестная платформа пилота")
         return platform
 
+    @staticmethod
+    def _pilot_run_id(value: str) -> str:
+        run_id = str(value).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", run_id):
+            raise ValueError("Некорректный идентификатор запуска пилота")
+        return run_id
+
+    @staticmethod
+    def _increment_pilot_usage_row(
+        connection: sqlite3.Connection,
+        *,
+        day: str,
+        platform: str,
+        event: str,
+        count: int = 1,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO pilot_daily_usage(day, platform, event, count)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(day, platform, event) DO UPDATE SET
+                count = MIN(pilot_daily_usage.count + excluded.count, ?)
+            """,
+            (day, platform, event, count, PILOT_USAGE_MAX_DAILY_COUNT),
+        )
+
+    @staticmethod
+    def _pilot_usage_window() -> tuple[str, str]:
+        local_today = datetime.now().astimezone().date()
+        return (
+            local_today.isoformat(),
+            (local_today - timedelta(days=PILOT_USAGE_RETENTION_DAYS)).isoformat(),
+        )
+
+    @staticmethod
+    def _ensure_pilot_usage_state(
+        connection: sqlite3.Connection,
+        platform: str,
+        now: datetime,
+    ) -> tuple[datetime, float | None]:
+        state_row = connection.execute(
+            """
+            SELECT started_at, first_value_seconds
+            FROM pilot_usage_state WHERE platform = ?
+            """,
+            (platform,),
+        ).fetchone()
+        if state_row is None:
+            connection.execute(
+                """
+                INSERT INTO pilot_usage_state(platform, started_at, first_value_seconds)
+                VALUES (?, ?, NULL)
+                """,
+                (platform, now.isoformat(timespec="seconds")),
+            )
+            return now, None
+        try:
+            started_at = datetime.fromisoformat(str(state_row[0]))
+            if started_at.tzinfo is None:
+                raise ValueError("timezone required")
+        except (TypeError, ValueError):
+            started_at = now
+            connection.execute(
+                """
+                UPDATE pilot_usage_state SET started_at = ?
+                WHERE platform = ?
+                """,
+                (now.isoformat(timespec="seconds"), platform),
+            )
+        first_value = state_row[1]
+        return started_at, float(first_value) if first_value is not None else None
+
+    def begin_pilot_session(self, platform: str, run_id: str) -> dict[str, bool]:
+        """Start one durable content-free app session.
+
+        A still-active marker from a different run means the previous backend
+        did not process its graceful ``quit`` command.  That is an intentionally
+        conservative crash-free proxy: no stack trace, path, prompt, user, or
+        work identifier is stored or exported.
+        """
+
+        normalized_platform = self._pilot_platform(platform)
+        normalized_run = self._pilot_run_id(run_id)
+        day, cutoff_day = self._pilot_usage_window()
+        now = datetime.now(UTC)
+        with self.transaction() as connection:
+            previous = connection.execute(
+                "SELECT run_id, state FROM pilot_session_lifecycle WHERE platform = ?",
+                (normalized_platform,),
+            ).fetchone()
+            if previous is not None and str(previous[0]) == normalized_run:
+                return {
+                    "started": False,
+                    "previous_unclean": False,
+                }
+            previous_unclean = bool(
+                previous is not None and str(previous[1]) == "active"
+            )
+            connection.execute(
+                """
+                INSERT INTO pilot_session_lifecycle(platform, run_id, state)
+                VALUES (?, ?, 'active')
+                ON CONFLICT(platform) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    state = excluded.state
+                """,
+                (normalized_platform, normalized_run),
+            )
+            self._increment_pilot_usage_row(
+                connection,
+                day=day,
+                platform=normalized_platform,
+                event="app_session_started",
+            )
+            if previous_unclean:
+                self._increment_pilot_usage_row(
+                    connection,
+                    day=day,
+                    platform=normalized_platform,
+                    event="app_session_unclean_exit",
+                )
+            connection.execute(
+                "DELETE FROM pilot_daily_usage WHERE day < ?",
+                (cutoff_day,),
+            )
+            self._ensure_pilot_usage_state(connection, normalized_platform, now)
+        return {
+            "started": True,
+            "previous_unclean": previous_unclean,
+        }
+
+    def finish_pilot_session(self, platform: str, run_id: str) -> bool:
+        """Mark the current run clean exactly once and return whether it changed."""
+
+        normalized_platform = self._pilot_platform(platform)
+        normalized_run = self._pilot_run_id(run_id)
+        day, cutoff_day = self._pilot_usage_window()
+        with self.transaction() as connection:
+            updated = connection.execute(
+                """
+                UPDATE pilot_session_lifecycle SET state = 'clean'
+                WHERE platform = ? AND run_id = ? AND state = 'active'
+                """,
+                (normalized_platform, normalized_run),
+            ).rowcount
+            if updated != 1:
+                return False
+            self._increment_pilot_usage_row(
+                connection,
+                day=day,
+                platform=normalized_platform,
+                event="app_session_clean_exit",
+            )
+            connection.execute(
+                "DELETE FROM pilot_daily_usage WHERE day < ?",
+                (cutoff_day,),
+            )
+        return True
+
     def record_pilot_usage(self, platform: str, event: str, *, count: int = 1) -> None:
         """Increment one allowlisted daily product counter.
 
@@ -4761,63 +4935,25 @@ class AssistantStore:
         ):
             raise ValueError("Счётчик использования должен быть от 1 до 1000")
         now = datetime.now(UTC)
-        local_day = datetime.now().astimezone().date().isoformat()
-        cutoff_day = (
-            datetime.now().astimezone().date()
-            - timedelta(days=PILOT_USAGE_RETENTION_DAYS)
-        ).isoformat()
+        local_day, cutoff_day = self._pilot_usage_window()
         with self.transaction() as connection:
-            connection.execute(
-                """
-                INSERT INTO pilot_daily_usage(day, platform, event, count)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(day, platform, event) DO UPDATE SET
-                    count = MIN(pilot_daily_usage.count + excluded.count, ?)
-                """,
-                (
-                    local_day,
-                    normalized_platform,
-                    normalized_event,
-                    count,
-                    PILOT_USAGE_MAX_DAILY_COUNT,
-                ),
+            self._increment_pilot_usage_row(
+                connection,
+                day=local_day,
+                platform=normalized_platform,
+                event=normalized_event,
+                count=count,
             )
             connection.execute(
                 "DELETE FROM pilot_daily_usage WHERE day < ?",
                 (cutoff_day,),
             )
-            state_row = connection.execute(
-                """
-                SELECT started_at, first_value_seconds
-                FROM pilot_usage_state WHERE platform = ?
-                """,
-                (normalized_platform,),
-            ).fetchone()
-            if state_row is None:
-                started_at = now
-                connection.execute(
-                    """
-                    INSERT INTO pilot_usage_state(platform, started_at, first_value_seconds)
-                    VALUES (?, ?, NULL)
-                    """,
-                    (normalized_platform, now.isoformat(timespec="seconds")),
-                )
-            else:
-                try:
-                    started_at = datetime.fromisoformat(str(state_row[0]))
-                    if started_at.tzinfo is None:
-                        raise ValueError("timezone required")
-                except (TypeError, ValueError):
-                    started_at = now
-                    connection.execute(
-                        """
-                        UPDATE pilot_usage_state SET started_at = ?
-                        WHERE platform = ?
-                        """,
-                        (now.isoformat(timespec="seconds"), normalized_platform),
-                    )
+            started_at, first_value = self._ensure_pilot_usage_state(
+                connection,
+                normalized_platform,
+                now,
+            )
             if normalized_event in PILOT_USAGE_FIRST_VALUE_EVENTS:
-                first_value = state_row[1] if state_row is not None else None
                 if first_value is None:
                     elapsed = max(0.0, min((now - started_at).total_seconds(), 31_536_000.0))
                     connection.execute(
@@ -4940,8 +5076,14 @@ class AssistantStore:
         voice_turns = event_counts["voice_turn_completed"]
         text_turns = event_counts["text_turn_completed"]
         completed_turns = voice_turns + text_turns
+        clean_exits = event_counts["app_session_clean_exit"]
+        unclean_exits = event_counts["app_session_unclean_exit"]
+        observed_exits = clean_exits + unclean_exits
+        crash_free_session_rate = (
+            round(clean_exits / observed_exits, 6) if observed_exits else None
+        )
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "privacy": "content_free_daily_aggregate",
             "window_days": days,
             "platform_filter": normalized_platform,
@@ -4949,6 +5091,10 @@ class AssistantStore:
             "active_days": len(active_days),
             "active_days_last_7": len(active_days_last_7),
             "sessions": event_counts["app_session_started"],
+            "observed_session_exits": observed_exits,
+            "clean_session_exits": clean_exits,
+            "unclean_session_exits": unclean_exits,
+            "crash_free_session_rate": crash_free_session_rate,
             "completed_turns": completed_turns,
             "voice_turns": voice_turns,
             "text_turns": text_turns,
@@ -4971,6 +5117,12 @@ class AssistantStore:
                 "rating_at_least_4": (
                     selected_rating >= 4 if selected_rating is not None else None
                 ),
+                "crash_free_at_least_99_percent": (
+                    crash_free_session_rate >= 0.99
+                    if crash_free_session_rate is not None
+                    else None
+                ),
+                "crash_free_sample_sufficient": observed_exits >= 20,
             },
             "events": event_counts,
         }

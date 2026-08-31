@@ -80,6 +80,7 @@ function setMode(mode) {
   document.body.dataset.mode = mode;
   byId("modeButton").textContent = mode === "compact" ? "Полное окно" : "Компактно";
   updateComposerPresentation();
+  renderRuntime();
 }
 
 function requestModeToggle() {
@@ -953,10 +954,11 @@ function renderRuntime() {
   const route = ready && provider === "local" ? "local" : ready && provider === "corporate" ? "corporate" : "unconfigured";
   document.body.dataset.route = route;
   const routeLabel = byId("routeLabel");
+  const compact = state.mode === "compact";
   routeLabel.textContent = route === "local"
-    ? "локальная модель · данные на устройстве"
+    ? compact ? "полностью локально" : "локальная модель · данные на устройстве"
     : route === "corporate"
-      ? "корпоративная модель · защищённый API"
+      ? compact ? "корпоративный контур" : "корпоративная модель · защищённый API"
       : state.runtime.base_url ? "модель требует настройки" : "модель не настроена";
   byId("sidebarStatus").textContent = route === "local" ? "Локальный контур" : route === "corporate" ? "Корпоративный контур" : "Нужна настройка";
   const javaPolicy = state.platform.java_core_policy || {};
@@ -1013,8 +1015,11 @@ function renderVoiceCapability() {
   byId("micLabel").textContent = available
     ? state.listening ? "Завершить разговор" : "Начать разговор"
     : runtimeAvailable ? "Нет доступа к микрофону" : "Настройте голосовой runtime";
+  const dictationHint = state.ptt.sttAvailable && state.ptt.hotkeyAvailable
+    ? "F8 — диктовка в активное поле."
+    : pttDiagnosticText();
   byId("voiceNote").textContent = available
-    ? `Полный ответ остаётся в чате, голосом звучит короткая реплика. Говорите во время ответа, чтобы перебить. ${pttDiagnosticText()}`
+    ? `Полный ответ — в чате. Говорите, чтобы перебить. ${dictationHint}`
     : captureAvailable
       ? `${voiceDiagnosticText() || "Нужны Faster-Whisper и доступный локальный OmniVoice-Fast server."} ${pttDiagnosticText()}`
       : "Electron не предоставляет доступ к микрофону в текущем окружении.";
@@ -1050,6 +1055,11 @@ function renderPilotMetrics() {
   const voiceTurns = Number(usage.voice_turns || 0);
   const meetingImports = Number(usage.meeting_imports || 0);
   const meetingBriefings = Number(usage.meeting_briefings || 0);
+  const observedExits = Number(usage.observed_session_exits || 0);
+  const cleanExits = Number(usage.clean_session_exits || 0);
+  const crashFreeRate = usage.crash_free_session_rate == null
+    ? null
+    : Number(usage.crash_free_session_rate);
   const firstValueSeconds = usage.first_value_seconds == null
     ? null
     : Number(usage.first_value_seconds);
@@ -1060,6 +1070,13 @@ function renderPilotMetrics() {
   ];
   if (meetingImports > 0) usageParts.push(`встреч импортировано: ${meetingImports}`);
   if (meetingBriefings > 0) usageParts.push(`брифингов: ${meetingBriefings}`);
+  if (observedExits > 0 && crashFreeRate != null && Number.isFinite(crashFreeRate)) {
+    usageParts.push(
+      `штатных завершений: ${(crashFreeRate * 100).toFixed(1)}% (${cleanExits}/${observedExits})`,
+    );
+  } else {
+    usageParts.push("надёжность: ожидает завершений");
+  }
   if (firstValueSeconds != null && Number.isFinite(firstValueSeconds)) {
     usageParts.push(`первый результат: ${(firstValueSeconds / 60).toFixed(1)} мин`);
   }
