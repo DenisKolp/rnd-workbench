@@ -12,6 +12,27 @@ def make_store(tmp_path: Path) -> AssistantStore:
     return AssistantStore(tmp_path / "assistant.sqlite3")
 
 
+def test_connector_checkpoint_is_workspace_scoped_and_not_copied_to_audit(
+    tmp_path,
+) -> None:
+    store = make_store(tmp_path)
+    workspace_id = store.default_workspace_id()
+
+    saved = store.save_connector_checkpoint(
+        "express-corporate-intake",
+        workspace_id,
+        cursor="opaque-cursor-value",
+        watermark="2026-08-31T10:00:00Z",
+    )
+
+    assert saved["cursor"] == "opaque-cursor-value"
+    assert store.connector_checkpoint("express-corporate-intake", workspace_id) == saved
+    audit = store._rows(
+        "SELECT detail FROM audit_log WHERE action='connector.checkpoint.update'"
+    )
+    assert audit == [{"detail": "opaque checkpoint updated"}]
+
+
 def test_store_seeds_local_workspace_skills_and_capabilities(tmp_path) -> None:
     store = make_store(tmp_path)
     snapshot = store.snapshot()

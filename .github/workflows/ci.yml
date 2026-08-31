@@ -144,7 +144,7 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTHONPATH = Join-Path $PWD "src"
-          python -m pytest tests/test_windows_backend.py tests/test_windows_electron_contract.py tests/test_synapse_package.py tests/test_integrations.py
+          python -m pytest tests/test_windows_backend.py tests/test_windows_electron_contract.py tests/test_synapse_package.py tests/test_express_intake.py tests/test_integrations.py
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

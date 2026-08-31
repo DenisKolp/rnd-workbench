@@ -37,6 +37,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
 
+from .express_intake import CONNECTOR_ID, ExpressIntakeError, ExpressMeetingIntake
 from .java_core import (
     CorePolicyRuntime,
     JavaCorePolicyClient,
@@ -818,11 +819,15 @@ class WindowsPilotBackend:
         chat_factory: ChatFactory = OpenAIChatClient,
         voice_runtime: VoiceRuntime | None = None,
         core_policy: CorePolicyRuntime | None = None,
+        express_intake: ExpressMeetingIntake | None = None,
     ) -> None:
         self.emitter = emitter
         self.store = AssistantStore(data_path)
         self._storage_health = self.store.health_check()
         self.orchestrator = LocalOrchestrator(self.store)
+        self.express_intake = express_intake or ExpressMeetingIntake.from_environment_safe(
+            self.orchestrator.synapse_package_importer()
+        )
         snapshot = self.store.snapshot()
         self.current_workspace_id = str(snapshot["current_workspace_id"])
         self.current_task_id = snapshot.get("current_task_id")
@@ -970,6 +975,8 @@ class WindowsPilotBackend:
             )
         elif name == "pilot_preflight":
             self.run_pilot_preflight()
+        elif name == "sync_express_meetings":
+            self.sync_express_meetings()
         elif name == "ptt_capabilities":
             self.emit_dictation_capability()
         elif name == "ptt_dictation_start":
@@ -1118,6 +1125,91 @@ class WindowsPilotBackend:
                 else "done"
             ),
         )
+
+    def sync_express_meetings(self) -> None:
+        diagnostics = self.express_intake.diagnostics()
+        if not diagnostics["configured"]:
+            self.emitter.emit(
+                "express_sync_error",
+                code=diagnostics["reason_code"],
+                message="Корпоративный intake eXpress не настроен администратором",
+                retryable=False,
+            )
+            return
+        if self._busy() or self._voice_session_active:
+            self.emitter.emit(
+                "express_sync_error",
+                code="APP_BUSY",
+                message="Остановите голос и дождитесь завершения текущей операции",
+                retryable=True,
+            )
+            return
+        worker = threading.Thread(
+            target=self._run_express_sync,
+            args=(self.current_workspace_id,),
+            name="windows-express-meeting-sync",
+            daemon=True,
+        )
+        with self._lock:
+            self._meeting_import_worker = worker
+        self.emitter.emit(
+            "state",
+            state="syncing_meetings",
+            detail="Получаю новые встречи eXpress…",
+        )
+        worker.start()
+
+    def _run_express_sync(self, workspace_id: str) -> None:
+        try:
+            checkpoint = self.store.connector_checkpoint(CONNECTOR_ID, workspace_id)
+            result = self.express_intake.sync_until_idle(
+                workspace_id=workspace_id,
+                cursor=str(checkpoint["cursor"]) if checkpoint else None,
+                commit_checkpoint=lambda cursor, watermark: self.store.save_connector_checkpoint(
+                    CONNECTOR_ID,
+                    workspace_id,
+                    cursor=cursor,
+                    watermark=watermark,
+                ),
+            )
+            imported = list(result.get("imported") or [])
+            if imported:
+                last = imported[-1]
+                self.current_workspace_id = workspace_id
+                self.current_meeting_id = str(last["meeting_id"])
+            self.emitter.emit(
+                "express_sync_completed",
+                processed=int(result["processed"]),
+                added=int(result["added"]),
+                deduplicated=int(result["deduplicated"]),
+                has_more=bool(result["has_more"]),
+                connector=result["connector"],
+            )
+            self.emit_snapshot()
+        except ExpressIntakeError as error:
+            self.emitter.emit(
+                "express_sync_error",
+                code=error.code,
+                message=str(error),
+                retryable=error.retryable,
+            )
+        except (KeyError, OSError, ValueError):
+            self.emitter.emit(
+                "express_sync_error",
+                code="LOCAL_IMPORT_ERROR",
+                message="Не удалось сохранить проверенный пакет встречи",
+                retryable=True,
+            )
+        finally:
+            with self._lock:
+                if self._meeting_import_worker is threading.current_thread():
+                    self._meeting_import_worker = None
+            runtime = self._runtime()
+            self.emitter.emit(
+                "state",
+                state="ready" if runtime["ready"] else "needs_configuration",
+                detail="Готов к работе" if runtime["ready"] else runtime["detail"],
+            )
 
     def import_synapse_package(self, command: dict[str, Any]) -> None:
         """Import a local meeting export without blocking the JSONL loop."""
@@ -1613,6 +1705,9 @@ class WindowsPilotBackend:
         voice = self._voice_runtime.diagnostics()
         java_policy = self._core_policy.diagnostics()
         action_journal = self.integration_hub.action_journal_diagnostics()
+        connected_systems = set(self.integration_hub.connected_systems())
+        if self.express_intake.diagnostics()["connected"]:
+            connected_systems.add("express")
         return build_pilot_preflight(
             PilotPreflightInputs(
                 platform="windows",
@@ -1623,7 +1718,7 @@ class WindowsPilotBackend:
                 microphone_verified=self._microphone_verified,
                 java_policy_ready=bool(java_policy.get("ready")),
                 action_journal_ready=bool(action_journal.get("ready")),
-                connected_systems=self.integration_hub.connected_systems(),
+                connected_systems=tuple(sorted(connected_systems)),
                 manual_meeting_import_ready=True,
                 distribution_verified=False,
                 metrics_summary=(
@@ -2724,6 +2819,11 @@ class WindowsPilotBackend:
                 "recovery": dict(self._action_recovery),
             },
         }
+        express_diagnostics = self.express_intake.diagnostics()
+        express_diagnostics["checkpoint_saved"] = bool(
+            self.store.connector_checkpoint(CONNECTOR_ID, self.current_workspace_id)
+        )
+        snapshot["express_connector"] = express_diagnostics
         snapshot["pilot_preflight"] = self._build_pilot_preflight(
             snapshot.get("pilot_metrics")
         )

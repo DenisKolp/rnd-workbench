@@ -18,7 +18,7 @@ from uuid import uuid4
 from .automation import next_run
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 PILOT_METRIC_UNITS = {
     "listen_ready_seconds": "seconds",
@@ -319,6 +319,14 @@ class AssistantStore:
         );
         CREATE INDEX IF NOT EXISTS source_import_receipts_state_idx
             ON source_import_receipts(state, lease_expires_at);
+        CREATE TABLE IF NOT EXISTS connector_checkpoints (
+            connector_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            cursor TEXT NOT NULL,
+            watermark TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(connector_id, workspace_id)
+        );
         CREATE TABLE IF NOT EXISTS meetings (
             id TEXT PRIMARY KEY,
             workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -1578,6 +1586,83 @@ class AssistantStore:
                 (source_system.strip().casefold(), external_id.strip(), claim_token),
             )
         return deleted.rowcount == 1
+
+    def connector_checkpoint(
+        self,
+        connector_id: str,
+        workspace_id: str,
+    ) -> dict[str, Any] | None:
+        rows = self._rows(
+            """
+            SELECT connector_id, workspace_id, cursor, watermark, updated_at
+            FROM connector_checkpoints
+            WHERE connector_id=? AND workspace_id=?
+            """,
+            (connector_id.strip(), workspace_id.strip()),
+        )
+        return rows[0] if rows else None
+
+    def save_connector_checkpoint(
+        self,
+        connector_id: str,
+        workspace_id: str,
+        *,
+        cursor: str,
+        watermark: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist an opaque receipt without copying it into the audit log."""
+
+        normalized_id = connector_id.strip()
+        normalized_cursor = cursor.strip()
+        normalized_watermark = watermark.strip() if watermark else None
+        values = (normalized_id, normalized_cursor, normalized_watermark or "")
+        if (
+            not normalized_id
+            or len(normalized_id) > 96
+            or not normalized_cursor
+            or len(normalized_cursor) > 512
+            or (normalized_watermark is not None and len(normalized_watermark) > 512)
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for value in values
+                for character in value
+            )
+        ):
+            raise ValueError("Некорректный checkpoint коннектора")
+        self.get_workspace(workspace_id)
+        now = utc_now()
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO connector_checkpoints(
+                    connector_id, workspace_id, cursor, watermark, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(connector_id, workspace_id) DO UPDATE SET
+                    cursor=excluded.cursor,
+                    watermark=excluded.watermark,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    normalized_id,
+                    workspace_id,
+                    normalized_cursor,
+                    normalized_watermark,
+                    now,
+                ),
+            )
+        self.audit(
+            None,
+            "connector.checkpoint.update",
+            f"{normalized_id}:{workspace_id}",
+            "success",
+            "opaque checkpoint updated",
+            actor="system",
+            origin="corporate_intake",
+        )
+        checkpoint = self.connector_checkpoint(normalized_id, workspace_id)
+        if checkpoint is None:
+            raise RuntimeError("Checkpoint коннектора не сохранился")
+        return checkpoint
 
     def find_source_by_provenance(
         self,

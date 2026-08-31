@@ -12,6 +12,7 @@ from voice_assistant.audio import (
     UtteranceDetector,
 )
 from voice_assistant.config import AudioConfig, Config
+from voice_assistant.express_intake import CONNECTOR_ID
 from voice_assistant.integrations import IntegrationIntent, IntegrationRequest
 from voice_assistant.java_core import JavaRouteDecision
 from voice_assistant.store import AssistantStore
@@ -57,6 +58,54 @@ class FakeCorePolicy:
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeExpressIntake:
+    def __init__(self) -> None:
+        self.connected = False
+        self.cursors: list[str | None] = []
+
+    def diagnostics(self):  # noqa: ANN201
+        return {
+            "connector_id": CONNECTOR_ID,
+            "configured": True,
+            "connected": self.connected,
+            "read_only": True,
+            "write_back_available": False,
+            "delivery_mode": "POLLING",
+            "last_success_at": "2026-08-31T10:00:00Z" if self.connected else None,
+            "last_error_code": None,
+            "reason_code": (
+                "CORPORATE_READ_ONLY_CONNECTED"
+                if self.connected
+                else "CORPORATE_INTAKE_NOT_VERIFIED"
+            ),
+        }
+
+    def sync(self, *, workspace_id, cursor=None):  # noqa: ANN001, ANN201
+        assert workspace_id
+        self.cursors.append(cursor)
+        self.connected = True
+        return {
+            "status": "succeeded",
+            "connector": self.diagnostics(),
+            "imported": [],
+            "processed": 0,
+            "added": 0,
+            "deduplicated": 0,
+            "next_cursor": "cursor-1",
+            "watermark": "2026-08-31T10:00:00Z",
+            "has_more": False,
+        }
+
+    def sync_until_idle(  # noqa: ANN201
+        self, *, workspace_id, cursor, commit_checkpoint, max_pages=10  # noqa: ANN001
+    ):
+        del max_pages
+        result = self.sync(workspace_id=workspace_id, cursor=cursor)
+        commit_checkpoint(result["next_cursor"], result["watermark"])
+        result["pages"] = 1
+        return result
 
 
 def test_event_emitter_writes_single_json_line(capsys) -> None:
@@ -163,6 +212,42 @@ def test_macos_pilot_preflight_uses_loaded_runtime_without_work_content(
     assert statuses["tts"] == "pass"
     assert statuses["microphone"] == "pass"
     assert statuses["voice_slo"] == "unverified"
+
+
+def test_macos_express_sync_persists_checkpoint_only_after_success(
+    capsys,
+    tmp_path,
+) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    intake = FakeExpressIntake()
+    backend = UIBackend(
+        Config.defaults(),
+        EventEmitter(),
+        store,
+        express_intake=intake,
+    )
+
+    backend.handle({"command": "sync_express_meetings"})
+    assert backend.express_sync_thread is not None
+    backend.express_sync_thread.join(timeout=2)
+
+    checkpoint = store.connector_checkpoint(
+        CONNECTOR_ID,
+        store.default_workspace_id(),
+    )
+    assert checkpoint is not None
+    assert checkpoint["cursor"] == "cursor-1"
+    assert intake.cursors == [None]
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    completed = next(event for event in events if event["type"] == "express_sync_completed")
+    snapshot = [event for event in events if event["type"] == "snapshot"][-1]["data"]
+    assert completed["processed"] == 0
+    assert snapshot["express_connector"]["connected"] is True
+    statuses = {
+        check["id"]: check["status"]
+        for check in snapshot["pilot_preflight"]["checks"]
+    }
+    assert statuses["corporate_connectors"] == "pass"
 
 
 def test_push_to_talk_dictation_returns_system_text_without_llm(

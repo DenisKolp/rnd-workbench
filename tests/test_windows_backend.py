@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from voice_assistant.express_intake import CONNECTOR_ID
 from voice_assistant.integrations import IntegrationIntent, IntegrationRequest
 from voice_assistant.java_core import (
     JavaActionClaim,
@@ -36,6 +37,54 @@ class CapturingEmitter:
 
     def emit(self, event_type: str, **payload: object) -> None:
         self.events.append({"type": event_type, **payload})
+
+
+class FakeExpressIntake:
+    def __init__(self) -> None:
+        self.connected = False
+        self.cursors: list[str | None] = []
+
+    def diagnostics(self):  # noqa: ANN201
+        return {
+            "connector_id": CONNECTOR_ID,
+            "configured": True,
+            "connected": self.connected,
+            "read_only": True,
+            "write_back_available": False,
+            "delivery_mode": "POLLING",
+            "last_success_at": "2026-08-31T10:00:00Z" if self.connected else None,
+            "last_error_code": None,
+            "reason_code": (
+                "CORPORATE_READ_ONLY_CONNECTED"
+                if self.connected
+                else "CORPORATE_INTAKE_NOT_VERIFIED"
+            ),
+        }
+
+    def sync(self, *, workspace_id, cursor=None):  # noqa: ANN001, ANN201
+        assert workspace_id
+        self.cursors.append(cursor)
+        self.connected = True
+        return {
+            "status": "succeeded",
+            "connector": self.diagnostics(),
+            "imported": [],
+            "processed": 0,
+            "added": 0,
+            "deduplicated": 0,
+            "next_cursor": "cursor-win-1",
+            "watermark": "2026-08-31T10:00:00Z",
+            "has_more": False,
+        }
+
+    def sync_until_idle(  # noqa: ANN201
+        self, *, workspace_id, cursor, commit_checkpoint, max_pages=10  # noqa: ANN001
+    ):
+        del max_pages
+        result = self.sync(workspace_id=workspace_id, cursor=cursor)
+        commit_checkpoint(result["next_cursor"], result["watermark"])
+        result["pages"] = 1
+        return result
 
 
 def test_windows_jsonl_events_are_console_encoding_independent(capsys) -> None:
@@ -1084,6 +1133,43 @@ def test_windows_pilot_preflight_is_dynamic_content_free_and_honest(tmp_path) ->
     assert statuses["voice_slo"] == "unverified"
     assert statuses["corporate_connectors"] == "warn"
     assert "НЕ СОХРАНЯТЬ" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_windows_express_sync_persists_checkpoint_and_updates_preflight(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    intake = FakeExpressIntake()
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        voice_runtime=FakeVoiceRuntime(),
+        express_intake=intake,
+    )
+
+    backend.handle({"command": "sync_express_meetings"})
+    worker = backend._meeting_import_worker
+    assert worker is not None
+    worker.join(timeout=2)
+
+    checkpoint = backend.store.connector_checkpoint(
+        CONNECTOR_ID,
+        backend.current_workspace_id,
+    )
+    assert checkpoint is not None
+    assert checkpoint["cursor"] == "cursor-win-1"
+    assert intake.cursors == [None]
+    completed = next(
+        event for event in emitter.events if event["type"] == "express_sync_completed"
+    )
+    snapshot = [event for event in emitter.events if event["type"] == "snapshot"][-1][
+        "data"
+    ]
+    assert completed["processed"] == 0
+    assert snapshot["express_connector"]["connected"] is True
+    statuses = {
+        check["id"]: check["status"]
+        for check in snapshot["pilot_preflight"]["checks"]
+    }
+    assert statuses["corporate_connectors"] == "pass"
 
 
 def test_push_to_talk_capability_requires_only_local_stt(tmp_path) -> None:

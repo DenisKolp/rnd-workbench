@@ -42,6 +42,7 @@ function setMeetingImporting(active, kind = state.meetingImportKind) {
   const audioButton = byId("meetingAudioImportButton");
   const transcriptButton = byId("meetingTranscriptImportButton");
   const packageButton = byId("synapseImportButton");
+  const expressButton = byId("expressSyncButton");
   if (audioButton) {
     audioButton.disabled = state.meetingImporting || !state.ptt.sttAvailable;
     audioButton.textContent = state.meetingImporting && activeKind === "audio"
@@ -62,6 +63,12 @@ function setMeetingImporting(active, kind = state.meetingImportKind) {
     packageButton.textContent = state.meetingImporting && activeKind === "package"
       ? "Проверяю пакет…"
       : "ZIP с контекстом";
+  }
+  if (expressButton) {
+    expressButton.disabled = state.meetingImporting;
+    expressButton.textContent = state.meetingImporting && activeKind === "express"
+      ? "Получаю встречи…"
+      : "Получить из eXpress";
   }
   if (!state.meetingImporting) state.meetingImportKind = "";
 }
@@ -1067,6 +1074,13 @@ function renderSnapshot() {
   renderVoiceCapability();
   renderPilotMetrics();
   renderPilotPreflight();
+  const express = state.snapshot.express_connector || {};
+  const expressButton = byId("expressSyncButton");
+  expressButton.hidden = !Boolean(express.configured);
+  expressButton.disabled = state.meetingImporting;
+  expressButton.title = express.connected
+    ? "Корпоративный read-only intake проверен"
+    : "Подключение настроено, но ещё не проверено";
   byId("metricsLabel").textContent = state.metric;
 }
 
@@ -1194,6 +1208,23 @@ function handleBackendEvent(event) {
         state.metric = "Импорт встречи не выполнен";
         byId("metricsLabel").textContent = state.metric;
         toast(String(event.message || "Не удалось импортировать пакет eXpress (Синапс)"));
+        break;
+      case "express_sync_completed":
+        setMeetingImporting(false);
+        state.metric = Number(event.added || 0) > 0
+          ? `Новых встреч: ${Number(event.added)}`
+          : "Новых встреч eXpress нет";
+        if (event.has_more) {
+          state.metric += " · есть ещё";
+        }
+        byId("metricsLabel").textContent = state.metric;
+        toast(state.metric);
+        break;
+      case "express_sync_error":
+        setMeetingImporting(false);
+        state.metric = "Синхронизация eXpress не выполнена";
+        byId("metricsLabel").textContent = state.metric;
+        toast(String(event.message || state.metric));
         break;
       case "meeting_transcript_imported":
         setMeetingImporting(false);
@@ -1380,6 +1411,19 @@ async function chooseMeetingAudio() {
   }
 }
 
+function syncExpressMeetings() {
+  if (state.meetingImporting) return;
+  const connector = state.snapshot.express_connector || {};
+  if (!connector.configured) {
+    toast("Корпоративный intake eXpress не настроен администратором");
+    return;
+  }
+  setMeetingImporting(true, "express");
+  state.metric = "Получаю новые встречи eXpress…";
+  byId("metricsLabel").textContent = state.metric;
+  sendCommand("sync_express_meetings");
+}
+
 async function exportPilotMetrics() {
   try {
     const reportPath = await window.rndWorkbench.choosePilotMetricsExport();
@@ -1489,6 +1533,7 @@ byId("newTaskButton").addEventListener("click", () => sendCommand("new_task", { 
 byId("meetingAudioImportButton").addEventListener("click", () => void chooseMeetingAudio());
 byId("meetingTranscriptImportButton").addEventListener("click", () => void chooseMeetingTranscript());
 byId("synapseImportButton").addEventListener("click", () => void chooseSynapsePackage());
+byId("expressSyncButton").addEventListener("click", syncExpressMeetings);
 byId("exportPilotMetricsButton").addEventListener("click", () => void exportPilotMetrics());
 byId("pilotPreflightButton").addEventListener("click", () => sendCommand("pilot_preflight"));
 byId("sendButton").addEventListener("click", sendText);

@@ -562,22 +562,25 @@ class LocalOrchestrator:
     ) -> dict[str, Any]:
         """Import a local Synapse export; this never calls a corporate API."""
 
+        return self.synapse_package_importer().import_package(
+            path,
+            workspace_id=workspace_id,
+        )
+
+    def synapse_package_importer(self):
+        """Create the shared validator used by local and corporate delivery."""
+
         from .synapse import SynapseMeetingPackageImporter
 
         return SynapseMeetingPackageImporter(
             self.store,
             text_extractor=self._extract_text,
-        ).import_package(path, workspace_id=workspace_id)
+        )
 
     def synapse_meeting_context(self, source_id: str) -> dict[str, Any]:
         """Rebuild traceable analysis and draft-only follow-ups from local data."""
 
-        from .synapse import SynapseMeetingPackageImporter
-
-        return SynapseMeetingPackageImporter(
-            self.store,
-            text_extractor=self._extract_text,
-        ).context(source_id)
+        return self.synapse_package_importer().context(source_id)
 
     def search(
         self,

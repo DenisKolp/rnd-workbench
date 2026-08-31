@@ -1013,6 +1013,9 @@ final class BackendController: ObservableObject {
     @Published private(set) var isVoiceStartPending = false
     @Published private(set) var meetingAudioImportInProgress = false
     @Published private(set) var meetingAudioImportStage: String?
+    @Published private(set) var expressConnectorConfigured = false
+    @Published private(set) var expressConnectorConnected = false
+    @Published private(set) var expressSyncInProgress = false
     private var meetingImportKind = "audio"
 
     private var process: Process?
@@ -1185,19 +1188,19 @@ final class BackendController: ObservableObject {
         externalDictationStartPending || externalDictationActive || externalDictationTranscribing
     }
     var canChangeLLMConfiguration: Bool {
-        isReady && !meetingAudioImportInProgress && !isSessionActive
+        isReady && !meetingAudioImportInProgress && !expressSyncInProgress && !isSessionActive
             && !isVoiceStartPending && !isLLMTurnPending && !isExternalDictationBusy
             && !state.isBusy && !llmConfigurationPending
     }
     var canSendText: Bool {
-        isReady && !meetingAudioImportInProgress && !isSessionActive
+        isReady && !meetingAudioImportInProgress && !expressSyncInProgress && !isSessionActive
             && !isVoiceStartPending && !isLLMTurnPending && !isExternalDictationBusy
             && !state.isBusy && !llmConfigurationPending
             && (!isExternalLLMActive || externalLLMReady)
     }
     var canToggleVoiceSession: Bool {
         if isSessionActive || isVoiceStartPending { return true }
-        return isReady && !meetingAudioImportInProgress
+        return isReady && !meetingAudioImportInProgress && !expressSyncInProgress
             && !isVoiceStartPending && !isLLMTurnPending && !isExternalDictationBusy
             && !state.isBusy && !llmConfigurationPending
             && (!isExternalLLMActive || externalLLMReady)
@@ -1649,6 +1652,13 @@ final class BackendController: ObservableObject {
         send(["command": "meeting_item_status", "id": id, "item_id": id, "status": status])
     }
     func prepareBriefing(_ id: String) { send(["command": "prepare_briefing", "id": id, "meeting_id": id]) }
+    func syncExpressMeetings() {
+        guard expressConnectorConfigured, !expressSyncInProgress,
+              isReady, !meetingAudioImportInProgress, !isSessionActive else { return }
+        expressSyncInProgress = true
+        meetingAudioImportStage = "Получаю новые встречи eXpress…"
+        send(["command": "sync_express_meetings"])
+    }
     func explainAttention() { send(["command": "explain_attention"]) }
     func selectWorkspace(_ id: String) { send(["command": "select_workspace", "id": id]) }
     func createWorkspace(name: String, description: String) { send(["command": "create_workspace", "name": name, "description": description]) }
@@ -2599,6 +2609,23 @@ final class BackendController: ObservableObject {
                 ? "Пакет eXpress (Синапс) уже есть в рабочем контексте"
                 : "Встреча из eXpress (Синапс) добавлена"
             meetingImportKind = "audio"
+        case "express_sync_completed":
+            let added = Int(number(event["added"]) ?? 0)
+            let hasMore = bool(event["has_more"])
+            expressSyncInProgress = false
+            expressConnectorConnected = true
+            let resultText = added > 0
+                ? "Новые встречи eXpress добавлены: \(added)"
+                : "Новых встреч eXpress нет"
+            meetingAudioImportStage = hasMore ? "\(resultText) · есть ещё" : resultText
+            statusText = meetingAudioImportStage ?? "Синхронизация eXpress завершена"
+        case "express_sync_error":
+            let message = event["message"] as? String
+                ?? "Не удалось синхронизировать встречи eXpress"
+            expressSyncInProgress = false
+            meetingAudioImportStage = nil
+            statusText = "Синхронизация eXpress не выполнена"
+            errorMessage = message
         case "entity_deleted":
             let title = (event["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let recovery = event["recovery"] as? String ?? "database_only"
@@ -2923,6 +2950,13 @@ final class BackendController: ObservableObject {
         pilotMetrics = (data["pilot_metrics"] as? [String: Any]) ?? [:]
         if let report = data["pilot_preflight"] as? [String: Any] {
             applyPilotPreflight(report)
+        }
+        if let connector = data["express_connector"] as? [String: Any] {
+            expressConnectorConfigured = bool(connector["configured"])
+            expressConnectorConnected = bool(connector["connected"])
+        } else {
+            expressConnectorConfigured = false
+            expressConnectorConnected = false
         }
         if let platform = data["platform"] as? [String: Any],
            let javaPolicy = platform["java_core_policy"] as? [String: Any] {
@@ -4367,13 +4401,25 @@ struct MeetingsView: View {
                     Button(action: controller.chooseSynapseMeetingPackage) {
                         Label("Папка или ZIP eXpress (Синапс)", systemImage: "shippingbox.and.arrow.backward")
                     }
+                    if controller.expressConnectorConfigured {
+                        Divider()
+                        Button(action: controller.syncExpressMeetings) {
+                            Label(
+                                controller.expressSyncInProgress
+                                    ? "Синхронизирую eXpress…"
+                                    : "Получить новые встречи eXpress",
+                                systemImage: "arrow.triangle.2.circlepath"
+                            )
+                        }
+                        .disabled(controller.expressSyncInProgress)
+                    }
                 } label: {
                     Label("Добавить встречу", systemImage: "plus.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(RnDTheme.navy)
                 .fixedSize(horizontal: true, vertical: false)
-                .disabled(!controller.canImportMeetingAudio)
+                .disabled(!controller.canImportMeetingAudio || controller.expressSyncInProgress)
                 .help("Добавить аудио, транскрипт или локальную папку/ZIP встречи из eXpress (Синапс)")
             }
             .controlSize(.small)
@@ -6629,7 +6675,7 @@ struct CompactAssistantView: View {
             .layoutPriority(1)
             Spacer(minLength: 0)
             Picker("", selection: modeBinding) {
-                ForEach(CompactMode.allCases) { item in Label(item.title, systemImage: item.icon).tag(item) }
+                ForEach(CompactMode.allCases) { item in Text(item.title).tag(item) }
             }
             .labelsHidden()
             .pickerStyle(.segmented)

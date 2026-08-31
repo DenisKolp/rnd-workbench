@@ -27,6 +27,7 @@ from .store import AssistantStore, highest_classification, normalize_classificat
 SCHEMA_VERSION = "1.0"
 SOURCE_SYSTEM = "synapse"
 IMPORT_MODE = "LOCAL_PACKAGE_IMPORT"
+CORPORATE_IMPORT_MODE = "CORPORATE_PACKAGE_IMPORT"
 MANIFEST_NAME = "manifest.json"
 MAX_MANIFEST_BYTES = 1 * 1024 * 1024
 MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024
@@ -115,9 +116,29 @@ class SynapseImportInProgressError(RuntimeError):
     code = "import_in_progress"
 
 
-def synapse_capability(*, checkpoint_accepted: bool = False) -> dict[str, Any]:
+def synapse_capability(
+    *,
+    checkpoint_accepted: bool = False,
+    real_integration: bool = False,
+    connector_id: str | None = None,
+) -> dict[str, Any]:
     """Truthful capability gate for the current implementation."""
 
+    if real_integration:
+        return {
+            "source_system": SOURCE_SYSTEM,
+            "import_mode": CORPORATE_IMPORT_MODE,
+            "package_import_available": True,
+            "corporate_api_connected": True,
+            "real_integration": True,
+            "write_back_available": False,
+            "live_connector_available": True,
+            "checkpoint_accepted": checkpoint_accepted,
+            "connector_id": connector_id or "express-corporate-intake",
+            "supported_delivery_modes": ["POLLING", "WEBHOOK"],
+            "reason_code": "CORPORATE_READ_ONLY_CONNECTED",
+            "label": "Корпоративный read-only импорт eXpress подключён",
+        }
     return {
         "source_system": SOURCE_SYSTEM,
         "import_mode": IMPORT_MODE,
@@ -131,6 +152,56 @@ def synapse_capability(*, checkpoint_accepted: bool = False) -> dict[str, Any]:
         "reason_code": "CORPORATE_API_NOT_CONNECTED",
         "label": "Локальный импорт пакета; API eXpress (Синапс) не подключён",
     }
+
+
+@dataclass(frozen=True, slots=True)
+class SynapseDelivery:
+    """Trusted transport metadata supplied by the application, not the ZIP."""
+
+    import_mode: str = IMPORT_MODE
+    real_integration: bool = False
+    connector_id: str | None = None
+    checkpoint: dict[str, str] | None = None
+
+    @classmethod
+    def local(
+        cls,
+        checkpoint: dict[str, str] | None = None,
+    ) -> "SynapseDelivery":
+        return cls(checkpoint=dict(checkpoint) if checkpoint else None)
+
+    @classmethod
+    def corporate(
+        cls,
+        *,
+        connector_id: str,
+        delivery_mode: str,
+        cursor: str | None = None,
+        watermark: str | None = None,
+    ) -> "SynapseDelivery":
+        normalized_id = _bounded_text(connector_id, "connector_id", 96)
+        if not _PACKAGE_ID.fullmatch(normalized_id):
+            raise ValueError("Некорректный connector_id")
+        checkpoint = _connector_checkpoint(
+            {
+                "delivery_mode": delivery_mode,
+                "cursor": cursor,
+                "watermark": watermark,
+            }
+        )
+        return cls(
+            import_mode=CORPORATE_IMPORT_MODE,
+            real_integration=True,
+            connector_id=normalized_id,
+            checkpoint=checkpoint,
+        )
+
+    def capability(self) -> dict[str, Any]:
+        return synapse_capability(
+            checkpoint_accepted=self.checkpoint is not None,
+            real_integration=self.real_integration,
+            connector_id=self.connector_id,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,7 +369,7 @@ class _ZipReader(_PackageReader):
 
 
 class SynapseMeetingPackageImporter:
-    """Import an eXpress (Синапс) export without any network access."""
+    """Validate and import a package already obtained by a trusted transport."""
 
     def __init__(
         self,
@@ -345,6 +416,7 @@ class SynapseMeetingPackageImporter:
         package_path: Path,
         *,
         workspace_id: str | None,
+        delivery: SynapseDelivery | None = None,
     ) -> dict[str, Any]:
         # Avoid duplicate work inside one backend. The durable SQLite receipt
         # below owns the package identity across processes; individual graph
@@ -353,6 +425,7 @@ class SynapseMeetingPackageImporter:
             return self._import_package_locked(
                 package_path,
                 workspace_id=workspace_id,
+                delivery=delivery,
             )
 
     def _import_package_locked(
@@ -360,8 +433,12 @@ class SynapseMeetingPackageImporter:
         package_path: Path,
         *,
         workspace_id: str | None,
+        delivery: SynapseDelivery | None,
     ) -> dict[str, Any]:
         manifest = self.inspect(package_path)
+        trusted_delivery = delivery or SynapseDelivery.local(
+            manifest.connector_checkpoint
+        )
         workspace_id = workspace_id or self.store.default_workspace_id()
         workspace = self.store.get_workspace(workspace_id)
         classification = highest_classification(
@@ -384,6 +461,7 @@ class SynapseMeetingPackageImporter:
                 workspace_id=workspace_id,
                 classification=classification,
                 claim=claim,
+                delivery=trusted_delivery,
             )
         finally:
             if claim_token:
@@ -405,6 +483,7 @@ class SynapseMeetingPackageImporter:
         workspace_id: str,
         classification: str,
         claim: dict[str, Any],
+        delivery: SynapseDelivery,
     ) -> dict[str, Any]:
 
         package_sources = self.store.sources_by_provenance(
@@ -486,13 +565,15 @@ class SynapseMeetingPackageImporter:
                 transcript_text[:2_000_000],
                 path=str(managed_transcript),
                 metadata={
-                    "provenance": _part_provenance(manifest, transcript_part),
+                    "provenance": _part_provenance(
+                        manifest,
+                        transcript_part,
+                        delivery=delivery,
+                    ),
                     "package_metadata": manifest.metadata,
                     "organizer": manifest.organizer,
                     "declared_participants": list(manifest.participants),
-                    "capability": synapse_capability(
-                        checkpoint_accepted=manifest.connector_checkpoint is not None
-                    ),
+                    "capability": delivery.capability(),
                     "follow_up_capabilities": _capability_list(),
                 },
                 visibility="workspace",
@@ -527,6 +608,7 @@ class SynapseMeetingPackageImporter:
                     "provenance": _part_provenance(
                         manifest,
                         description_part,
+                        delivery=delivery,
                         primary_source_id=primary["id"],
                     )
                 },
@@ -570,6 +652,7 @@ class SynapseMeetingPackageImporter:
                         "provenance": _part_provenance(
                             manifest,
                             part,
+                            delivery=delivery,
                             primary_source_id=primary["id"],
                         ),
                         "extraction_status": extraction_status,
@@ -593,19 +676,25 @@ class SynapseMeetingPackageImporter:
                 None,
                 "synapse.package.import",
                 primary["id"],
-                "local_mock",
+                "succeeded" if delivery.real_integration else "local_mock",
                 json.dumps(
                     {
                         "package_id": manifest.package_id,
                         "package_fingerprint": manifest.fingerprint,
                         "parts": len(manifest.parts),
-                        "real_integration": False,
+                        "real_integration": delivery.real_integration,
+                        "import_mode": delivery.import_mode,
+                        "connector_id": delivery.connector_id,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
-                actor="local-user",
-                origin="local_package_import",
+                actor=("corporate-service" if delivery.real_integration else "local-user"),
+                origin=(
+                    "express_corporate_intake"
+                    if delivery.real_integration
+                    else "local_package_import"
+                ),
             )
             result = self.context(primary["id"], status="imported")
             self._complete_claim(claim, manifest, workspace_id, primary["id"])
@@ -683,6 +772,15 @@ class SynapseMeetingPackageImporter:
     ) -> bool:
         if len(package_sources) != len(manifest.parts):
             return False
+        primary_provenance = primary.get("metadata", {}).get("provenance")
+        if not isinstance(primary_provenance, dict):
+            return False
+        expected_delivery = {
+            "import_mode": primary_provenance.get("import_mode"),
+            "real_integration": primary_provenance.get("real_integration"),
+            "connector_id": primary_provenance.get("connector_id"),
+            "connector_checkpoint": primary_provenance.get("connector_checkpoint"),
+        }
         expected = {
             (part.role.casefold(), part.relative_path): part for part in manifest.parts
         }
@@ -705,6 +803,7 @@ class SynapseMeetingPackageImporter:
                 part,
                 workspace_id=workspace_id,
                 classification=classification,
+                expected_delivery=expected_delivery,
             ):
                 return False
             actual[key] = (source, part)
@@ -751,14 +850,19 @@ class SynapseMeetingPackageImporter:
                 for field, value in _relation_metadata(part).items()
             ):
                 return False
+        expected_status = (
+            "succeeded"
+            if expected_delivery["real_integration"] is True
+            else "local_mock"
+        )
         return bool(
             self.store._rows(
                 """
                 SELECT id FROM audit_log
-                WHERE action='synapse.package.import' AND target=? AND status='local_mock'
+                WHERE action='synapse.package.import' AND target=? AND status=?
                 LIMIT 1
                 """,
-                (primary["id"],),
+                (primary["id"], expected_status),
             )
         )
 
@@ -771,8 +875,27 @@ class SynapseMeetingPackageImporter:
         *,
         workspace_id: str,
         classification: str,
+        expected_delivery: dict[str, Any],
     ) -> bool:
         provenance = source["metadata"]["provenance"]
+        import_mode = provenance.get("import_mode")
+        real_integration = provenance.get("real_integration")
+        if import_mode not in {IMPORT_MODE, CORPORATE_IMPORT_MODE}:
+            return False
+        if real_integration is not (import_mode == CORPORATE_IMPORT_MODE):
+            return False
+        if any(
+            provenance.get(field) != expected_delivery.get(field)
+            for field in (
+                "import_mode",
+                "real_integration",
+                "connector_id",
+                "connector_checkpoint",
+            )
+        ):
+            return False
+        if real_integration and not provenance.get("connector_id"):
+            return False
         if (
             source.get("workspace_id") != workspace_id
             or source.get("visibility") != "workspace"
@@ -781,7 +904,6 @@ class SynapseMeetingPackageImporter:
             )
             != source.get("classification")
             or provenance.get("source_system") != SOURCE_SYSTEM
-            or provenance.get("import_mode") != IMPORT_MODE
             or provenance.get("external_id") != manifest.package_id
             or provenance.get("package_fingerprint") != manifest.fingerprint
             or provenance.get("fingerprint_profile") != FINGERPRINT_PROFILE
@@ -789,7 +911,6 @@ class SynapseMeetingPackageImporter:
             or provenance.get("media_type") != part.media_type
             or provenance.get("sha256") != part.sha256
             or provenance.get("size_bytes") != part.size_bytes
-            or provenance.get("real_integration") is not False
         ):
             return False
         expected_kind = {
@@ -833,7 +954,8 @@ class SynapseMeetingPackageImporter:
             self.store._rows(
                 """
                 SELECT id FROM audit_log
-                WHERE action='synapse.package.import' AND target=? AND status='local_mock'
+                WHERE action='synapse.package.import' AND target=?
+                  AND status IN ('local_mock', 'succeeded')
                 LIMIT 1
                 """,
                 (primary["id"],),
@@ -906,7 +1028,9 @@ class SynapseMeetingPackageImporter:
             "meeting_id": meeting["id"],
             "title": meeting["title"],
             "capability": synapse_capability(
-                checkpoint_accepted=bool(provenance.get("connector_checkpoint"))
+                checkpoint_accepted=bool(provenance.get("connector_checkpoint")),
+                real_integration=bool(provenance.get("real_integration")),
+                connector_id=provenance.get("connector_id"),
             ),
             "follow_up_capabilities": _capability_list(),
             "analysis": analysis,
@@ -1501,11 +1625,12 @@ def _part_provenance(
     manifest: PackageManifest,
     part: PackagePart,
     *,
+    delivery: SynapseDelivery,
     primary_source_id: str | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "source_system": SOURCE_SYSTEM,
-        "import_mode": IMPORT_MODE,
+        "import_mode": delivery.import_mode,
         "external_id": manifest.package_id,
         "package_fingerprint": manifest.fingerprint,
         "fingerprint_profile": FINGERPRINT_PROFILE,
@@ -1515,12 +1640,14 @@ def _part_provenance(
         "media_type": part.media_type,
         "sha256": part.sha256,
         "size_bytes": part.size_bytes,
-        "real_integration": False,
+        "real_integration": delivery.real_integration,
     }
+    if delivery.connector_id:
+        result["connector_id"] = delivery.connector_id
     if primary_source_id:
         result["primary_source_id"] = primary_source_id
-    if manifest.connector_checkpoint is not None:
-        result["connector_checkpoint"] = manifest.connector_checkpoint
+    if delivery.checkpoint is not None:
+        result["connector_checkpoint"] = dict(delivery.checkpoint)
     return result
 
 
@@ -1671,6 +1798,7 @@ def _follow_up_proposals(
 
 
 __all__ = [
+    "CORPORATE_IMPORT_MODE",
     "FINGERPRINT_PROFILE",
     "FOLLOW_UP_CAPABILITIES",
     "IMPORT_MODE",
@@ -1681,6 +1809,7 @@ __all__ = [
     "SynapseImportInProgressError",
     "SynapseRepairRequiredError",
     "SynapseMeetingPackageImporter",
+    "SynapseDelivery",
     "meeting_package_fingerprint",
     "synapse_capability",
 ]

@@ -17,6 +17,11 @@ RnD Workbench умеет безопасно импортировать лока�
 Импорт не выполняет сетевых запросов и не меняет данные во внешних системах.
 Создаваемые предложения имеют режим `draft_only`.
 
+Эти флаги относятся именно к ручной доставке. Если тот же пакет получен
+проверенным корпоративным intake, приложение сохраняет транспорт отдельно как
+`CORPORATE_PACKAGE_IMPORT` и `real_integration = true`, но по-прежнему не
+разрешает write-back.
+
 ## Быстрый импорт без `manifest.json`
 
 Для ручного пилотного сценария не обязательно собирать manifest. Достаточно
@@ -183,7 +188,7 @@ provenance добавляется в briefing следующей встречи.
 анализ, повестка, предложения, provenance и честный capability gate. Выбор файла
 или каталога выполняет нативная оболочка; Python-команда не открывает UI сама.
 
-## Контракт будущего live connector eXpress
+## Контракт корпоративной доставки eXpress
 
 Экспорт может опционально нести checkpoint:
 
@@ -198,14 +203,19 @@ provenance добавляется в briefing следующей встречи.
 ```
 
 Допустимы `POLLING` и `WEBHOOK`; обязателен хотя бы `cursor` или `watermark`.
-Сейчас checkpoint только валидируется и сохраняется в provenance. Он не входит
-в content fingerprint: один пакет может быть повторно доставлен с новым
-checkpoint. Его наличие выставляет `checkpoint_accepted = true`, но **не**
-делает `live_connector_available` истинным.
+Checkpoint внутри локального ZIP только валидируется и сохраняется в provenance.
+Он не входит в content fingerprint: один пакет может быть повторно доставлен с
+новым checkpoint. Его наличие выставляет `checkpoint_accepted = true`, но само
+по себе **не** делает `live_connector_available` истинным.
 
-Основной будущий live path — eXpress Recordings Bot/BotX. Локальный package
-import останется fallback. Когда корпоративный connector будет реализован, его
-алгоритм должен быть таким:
+Read-only desktop-клиент корпоративного intake уже реализован для macOS и
+Windows. Он не доверяет transport metadata из ZIP: режим
+`CORPORATE_PACKAGE_IMPORT`, connector ID, cursor и watermark передаются
+импортёру проверенным сетевым слоем. При такой доставке provenance получает
+`real_integration = true`, а audit — статус `succeeded`; write-back всё равно
+остаётся выключенным. Локальный package import остаётся fallback.
+
+Алгоритм корпоративного polling:
 
 1. polling получает пакет после последнего подтверждённого cursor/watermark;
    webhook принимает тот же versioned package contract;
@@ -217,6 +227,15 @@ import останется fallback. Когда корпоративный connec
    conflict;
 6. retry после ошибки не продвигает checkpoint и не подтверждает webhook.
 
-Watched-folder источник и корпоративный API в версии 1.0 не реализованы. Их
-нельзя показывать как активную интеграцию до появления connector, авторизации,
-наблюдаемости и эксплуатационных тестов.
+Команда desktop-backend:
+
+```json
+{"command":"sync_express_meetings"}
+```
+
+Успех публикуется как `express_sync_completed`, безопасная ошибка — как
+`express_sync_error`. Конфигурация задаётся администратором через
+`RND_WORKBENCH_EXPRESS_INTAKE_URL` и
+`RND_WORKBENCH_EXPRESS_INTAKE_TOKEN`; bearer token не сохраняется. Реальная
+корпоративная интеграция всё ещё не считается подключённой до первого успешного
+ответа тестового/production intake. Watched-folder источник не реализован.

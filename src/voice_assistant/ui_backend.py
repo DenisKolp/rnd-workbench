@@ -27,6 +27,7 @@ from .audio import (
 )
 from .backends import OpenAICompatibleChat, normalize_openai_base_url, openai_url_is_loopback
 from .config import Config
+from .express_intake import CONNECTOR_ID, ExpressIntakeError, ExpressMeetingIntake
 from .java_core import (
     CorePolicyRuntime,
     JavaCorePolicyClient,
@@ -74,6 +75,7 @@ class UIBackend:
         store: AssistantStore | None = None,
         core_policy: CorePolicyRuntime | None = None,
         integration_hub: SafeIntegrationHub | None = None,
+        express_intake: ExpressMeetingIntake | None = None,
     ) -> None:
         self.config = config
         self.emitter = emitter
@@ -83,6 +85,9 @@ class UIBackend:
         self.store = store or AssistantStore(data_path)
         self._storage_health = self.store.health_check()
         self.orchestrator = LocalOrchestrator(self.store)
+        self.express_intake = express_intake or ExpressMeetingIntake.from_environment_safe(
+            self.orchestrator.synapse_package_importer()
+        )
         self._core_policy = (
             core_policy
             if core_policy is not None
@@ -124,6 +129,7 @@ class UIBackend:
         self._dictation_stt_worker: threading.Thread | None = None
         self.text_thread: threading.Thread | None = None
         self.audio_import_thread: threading.Thread | None = None
+        self.express_sync_thread: threading.Thread | None = None
         self.task_lock = threading.Lock()
         self._turn_lock = threading.Lock()
         self._current_turn_cancel: threading.Event | None = None
@@ -224,6 +230,8 @@ class UIBackend:
             self.export_pilot_metrics(command)
         elif name == "pilot_preflight":
             self.run_pilot_preflight()
+        elif name == "sync_express_meetings":
+            self.sync_express_meetings()
         elif name == "select_workspace":
             workspace_id = str(command.get("id", ""))
             self.store.get_workspace(workspace_id)
@@ -832,6 +840,99 @@ class UIBackend:
             self.task_lock.release()
         if source is not None and event_automations:
             self._run_event_automations(event_automations, source)
+
+    def sync_express_meetings(self) -> None:
+        diagnostics = self.express_intake.diagnostics()
+        if not diagnostics["configured"]:
+            self.emitter.emit(
+                "express_sync_error",
+                code=diagnostics["reason_code"],
+                message="Корпоративный intake eXpress не настроен администратором",
+                retryable=False,
+            )
+            return
+        if self.express_sync_thread is not None and self.express_sync_thread.is_alive():
+            self.emitter.emit(
+                "express_sync_error",
+                code="SYNC_IN_PROGRESS",
+                message="Синхронизация eXpress уже выполняется",
+                retryable=True,
+            )
+            return
+        thread = threading.Thread(
+            target=self._sync_express_meetings_turn,
+            args=(self.current_workspace_id,),
+            name="express-meeting-sync",
+            daemon=True,
+        )
+        self.express_sync_thread = thread
+        thread.start()
+
+    def _sync_express_meetings_turn(self, workspace_id: str) -> None:
+        if not self.task_lock.acquire(blocking=False):
+            self.emitter.emit(
+                "express_sync_error",
+                code="APP_BUSY",
+                message="Дождитесь завершения текущей задачи",
+                retryable=True,
+            )
+            return
+        try:
+            self.emitter.emit(
+                "state",
+                state="syncing_meetings",
+                detail="Получаю новые встречи eXpress…",
+            )
+            checkpoint = self.store.connector_checkpoint(CONNECTOR_ID, workspace_id)
+            result = self.express_intake.sync_until_idle(
+                workspace_id=workspace_id,
+                cursor=str(checkpoint["cursor"]) if checkpoint else None,
+                commit_checkpoint=lambda cursor, watermark: self.store.save_connector_checkpoint(
+                    CONNECTOR_ID,
+                    workspace_id,
+                    cursor=cursor,
+                    watermark=watermark,
+                ),
+            )
+            imported = list(result.get("imported") or [])
+            if imported:
+                last = imported[-1]
+                self._set_current_workspace(workspace_id)
+                self.current_meeting_id = str(last["meeting_id"])
+                self._meeting_diff = []
+                self._meeting_briefing = None
+                self._sync_meeting_attention()
+            self.emitter.emit(
+                "express_sync_completed",
+                processed=int(result["processed"]),
+                added=int(result["added"]),
+                deduplicated=int(result["deduplicated"]),
+                has_more=bool(result["has_more"]),
+                connector=result["connector"],
+            )
+            self.emit_snapshot()
+        except ExpressIntakeError as error:
+            self.emitter.emit(
+                "express_sync_error",
+                code=error.code,
+                message=str(error),
+                retryable=error.retryable,
+            )
+        except (KeyError, OSError, ValueError):
+            self.emitter.emit(
+                "express_sync_error",
+                code="LOCAL_IMPORT_ERROR",
+                message="Не удалось сохранить проверенный пакет встречи",
+                retryable=True,
+            )
+        finally:
+            self.task_lock.release()
+            runtime = self._llm_runtime()
+            self.emitter.emit(
+                "state",
+                state="ready" if runtime["ready"] else "needs_configuration",
+                detail=runtime["detail"],
+            )
 
     def configure_llm(self, command: dict[str, Any]) -> None:
         """Atomically switch the active LLM runtime.
@@ -1482,6 +1583,9 @@ class UIBackend:
         runtime = self._llm_runtime()
         java_policy = self._core_policy.diagnostics()
         action_journal = self.integration_hub.action_journal_diagnostics()
+        connected_systems = set(self.integration_hub.connected_systems())
+        if self.express_intake.diagnostics()["connected"]:
+            connected_systems.add("express")
         return build_pilot_preflight(
             PilotPreflightInputs(
                 platform="macos",
@@ -1495,7 +1599,7 @@ class UIBackend:
                 microphone_verified=self._microphone_verified,
                 java_policy_ready=bool(java_policy.get("ready")),
                 action_journal_ready=bool(action_journal.get("ready")),
-                connected_systems=self.integration_hub.connected_systems(),
+                connected_systems=tuple(sorted(connected_systems)),
                 manual_meeting_import_ready=True,
                 distribution_verified=False,
                 metrics_summary=(
@@ -3316,6 +3420,11 @@ class UIBackend:
                 "recovery": dict(self._action_recovery),
             },
         }
+        express_diagnostics = self.express_intake.diagnostics()
+        express_diagnostics["checkpoint_saved"] = bool(
+            self.store.connector_checkpoint(CONNECTOR_ID, self.current_workspace_id)
+        )
+        snapshot["express_connector"] = express_diagnostics
         snapshot["pilot_preflight"] = self._build_pilot_preflight(
             snapshot.get("pilot_metrics")
         )

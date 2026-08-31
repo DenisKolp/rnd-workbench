@@ -162,6 +162,18 @@ def test_dynamic_pilot_preflight_is_rendered_and_can_be_refreshed() -> None:
     assert 'id="pilotPreflightList"' in html
 
 
+def test_express_sync_control_is_conditional_and_uses_backend_contract() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+
+    assert 'id="expressSyncButton"' in html
+    assert 'id="expressSyncButton" type="button" hidden' in html
+    assert "state.snapshot.express_connector" in renderer
+    assert 'sendCommand("sync_express_meetings")' in renderer
+    assert 'case "express_sync_completed":' in renderer
+    assert 'case "express_sync_error":' in renderer
+
+
 def test_compact_chat_state_stops_hidden_microphone_capture() -> None:
     source = RENDERER.read_text(encoding="utf-8")
     transition = source.split("function setCompactView(view)", maxsplit=1)[1].split(

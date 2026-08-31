@@ -1,7 +1,7 @@
 # RnD Workbench — Windows Electron pilot
 
 Версия Windows-компонента — **0.1.0-pilot**; она входит в общий продуктовый
-milestone **0.9.2**, но не обозначает готовую Windows-поставку.
+milestone **0.9.3**, но не обозначает готовую Windows-поставку.
 
 Это минимальная честная Windows-ветка для пилота на 30 сотрудниках. Клиент
 реализован **только на Electron**. Компактный голосовой виджет и полноразмерное
@@ -31,7 +31,7 @@ Faster-Whisper weights и loopback OmniVoice-Fast server Python-мост чес�
 | Голосовой ввод, STT | Готово в исходниках | Electron WebAudio → mono PCM16/16 кГц, adaptive VAD/pre-roll и Faster-Whisper; нужен Windows hardware QA |
 | Глобальная диктовка | Готово в исходниках | Удержание F8 записывает речь, отпускание вставляет текст через UI Automation/SendInput; secure fields отклоняются, нужен Windows hardware QA |
 | TTS, единый голос, перебивание | Готово в исходниках | Один короткий OmniVoice-Fast запрос с фиксированными profile/seed, PCM stream, limiter, 12-мс fade и barge-in; локальная агрегированная диагностика готова, акустические SLO на реальном устройстве не подтверждены |
-| Импорт встреч eXpress | Готово в исходниках | Локальный Faster-Whisper обрабатывает выбранный аудиофайл; также доступны готовый транскрипт и быстрый ZIP с описанием/вложениями без ручного manifest. Нужен Windows hardware QA |
+| Импорт встреч eXpress | Готово в исходниках | Локальный Faster-Whisper обрабатывает аудио; доступны готовый транскрипт и быстрый ZIP. Read-only корпоративный intake скрыт до admin-конфигурации и считается подключённым только после успешной проверки endpoint |
 | Jira / Kaiten / Confluence / почта / календарь | Не подключено | Нужны корпоративные API, OAuth/SSO и тестовые стенды |
 | Voice-ready portable QA artifact | Проверено в CI | Frozen backend импортирует Faster-Whisper, CTranslate2 и Tokenizers, запускает bundled Java route gate и action journal probe; artifact хранится семь дней |
 | Preflight устройства | Готово в исходниках | 11 content-free проверок показывают реальные блокеры, предупреждения и неподтверждённые SLO; результат можно обновить в полном окне |
@@ -107,6 +107,17 @@ $env:RND_WORKBENCH_WINDOWS_STT_DEVICE = "cpu" # либо cuda в подгото�
 не содержит запросы, транскрипты, ответы или идентификаторы сессий.
 Рядом доступен динамический preflight устройства; статичная декларация
 готовности не используется.
+
+Корпоративный сервис нормализованных пакетов встреч настраивается deployment-
+администратором, а не пользователем интерфейса:
+
+```powershell
+$env:RND_WORKBENCH_EXPRESS_INTAKE_URL = "https://express-intake.corp.example/bridge"
+$env:RND_WORKBENCH_EXPRESS_INTAKE_TOKEN = "<из защищённого launcher/vault>"
+```
+
+Токен не сохраняется. Кнопка «Получить из eXpress» появляется только при полной
+конфигурации; cursor продвигается после успешного импорта всей страницы.
 
 В настройках выберите один из маршрутов:
 

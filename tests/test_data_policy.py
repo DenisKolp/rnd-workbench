@@ -62,12 +62,12 @@ def configure_route(
     store.set_settings({key: str(value or "") for key, value in values.items()})
 
 
-def test_fresh_schema_v9_has_fail_safe_defaults_and_public_builtin_skills(
+def test_fresh_schema_has_fail_safe_defaults_and_public_builtin_skills(
     tmp_path: Path,
 ) -> None:
     store = make_store(tmp_path)
 
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
     assert (
         store._connection.execute("PRAGMA user_version").fetchone()[0]
         == SCHEMA_VERSION
