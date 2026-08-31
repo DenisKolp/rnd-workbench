@@ -2,3 +2,4 @@
 # model weights and the OmniVoice-Fast native server are intentionally external.
 -r requirements-build.txt
 faster-whisper==1.2.0
+requests==2.34.2

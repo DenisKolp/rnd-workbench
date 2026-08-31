@@ -105,6 +105,7 @@ jobs:
             ForEach-Object { $_ | ConvertFrom-Json } |
             Where-Object { $_.type -eq "diagnostic" -and $_.check -eq "runtime_dependencies" } |
             Select-Object -Last 1
+          Write-Host ("Voice dependency probe: " + ($probe | ConvertTo-Json -Compress))
           if ($null -eq $probe -or -not $probe.ready) {
             throw "Packaged Faster-Whisper dependencies are unavailable."
           }

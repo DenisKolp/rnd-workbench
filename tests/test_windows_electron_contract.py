@@ -262,6 +262,7 @@ def test_windows_build_uses_isolated_pinned_non_mlx_dependencies() -> None:
     assert "numpy==2.2.6" in base
     assert "pyinstaller==6.15.0" in base
     assert "faster-whisper==1.2.0" in voice
+    assert "requests==2.34.2" in voice
     package_lines = "\n".join(
         line for line in (base + voice).splitlines() if not line.lstrip().startswith("#")
     )
@@ -279,6 +280,7 @@ def test_windows_build_uses_isolated_pinned_non_mlx_dependencies() -> None:
     assert "windows/requirements-voice.txt" in workflow
     assert "windows/build.ps1 -Python python -WithVoice" in workflow
     assert '"command":"voice_dependency_probe"' in workflow
+    assert "Voice dependency probe:" in workflow
     assert "RnD-Workbench-Windows-voice-ready-unsigned-QA" in workflow
 
 
