@@ -4,6 +4,7 @@ import re
 
 ROOT = Path(__file__).parents[1]
 MAIN = ROOT / "windows" / "electron" / "main.js"
+PACKAGE = ROOT / "windows" / "electron" / "package.json"
 PRELOAD = ROOT / "windows" / "electron" / "preload.js"
 RENDERER = ROOT / "windows" / "electron" / "renderer" / "app.js"
 HTML = ROOT / "windows" / "electron" / "renderer" / "index.html"
@@ -16,7 +17,7 @@ PTT_INSERT = ROOT / "windows" / "electron" / "ptt-insert.ps1"
 
 
 def test_windows_client_is_electron_only_and_has_no_tkinter_shell() -> None:
-    package = (ROOT / "windows" / "electron" / "package.json").read_text(encoding="utf-8")
+    package = PACKAGE.read_text(encoding="utf-8")
     assert '"electron"' in package
     assert '"electron-builder"' in package
     assert not (ROOT / "windows" / "rnd_workbench.py").exists()
@@ -197,15 +198,23 @@ def test_dictation_insertion_is_clipboard_free_and_rejects_secure_fields() -> No
     )
 
 
-def test_electron_has_a_stable_future_java_core_boundary() -> None:
+def test_electron_bundles_java_policy_companion_behind_python_ml_bridge() -> None:
     source = MAIN.read_text(encoding="utf-8")
+    package = PACKAGE.read_text(encoding="utf-8")
     docs = DOCS.read_text(encoding="utf-8")
     assert "RND_WORKBENCH_CORE_EXECUTABLE" in source
     assert '"backend", "rnd-workbench-backend.exe"' in source
     assert "rnd-workbench-core.exe" not in source
+    assert "RND_WORKBENCH_JAVA_CORE_JAVA" in source
+    assert "RND_WORKBENCH_JAVA_CORE_LIB_DIR" in source
+    assert '"from": "../dist/java-core"' in package
+    assert '"from": "../dist/licenses"' in package
     assert "JSONL" in docs
-    assert "Java core уже имеет executable" in docs
-    assert "desktop adapter" in docs
+    assert "Java core" in docs
+    renderer = RENDERER.read_text(encoding="utf-8")
+    assert "java_core_policy" in renderer
+    assert "javaFallbackNotified" in renderer
+    assert "резервная встроенная политика" in renderer
 
 
 def test_windows_full_window_imports_express_transcript_or_package_through_trusted_ipc() -> None:
@@ -257,6 +266,7 @@ def test_packaging_includes_the_backend_bridge_and_requires_windows() -> None:
 
 def test_windows_build_uses_isolated_pinned_non_mlx_dependencies() -> None:
     build = (ROOT / "windows" / "build.ps1").read_text(encoding="utf-8")
+    package = PACKAGE.read_text(encoding="utf-8")
     base = BUILD_REQUIREMENTS.read_text(encoding="utf-8")
     voice = VOICE_REQUIREMENTS.read_text(encoding="utf-8")
     assert "numpy==2.2.6" in base
@@ -272,6 +282,11 @@ def test_windows_build_uses_isolated_pinned_non_mlx_dependencies() -> None:
     assert "RND_WORKBENCH_WINDOWS_WHISPER_MODEL" not in build
     assert "RND_WORKBENCH_WINDOWS_OMNIVOICE_URL" not in build
     assert '"--collect-all", "faster_whisper"' in build
+    assert "clean test installDist" in build
+    assert "JDK 21 jlink is required" in build
+    assert "verify_java_core_bridge.py" in build
+    assert "THIRD_PARTY_NOTICES.md" in build
+    assert '"../dist/java-core"' in package
     assert "onnxruntime" not in build
     assert "pip install" not in build
     assert "& $NodePackageManager ci" in build
@@ -280,6 +295,8 @@ def test_windows_build_uses_isolated_pinned_non_mlx_dependencies() -> None:
     assert "windows/requirements-voice.txt" in workflow
     assert "windows/build.ps1 -Python python -WithVoice" in workflow
     assert '"command":"voice_dependency_probe"' in workflow
+    assert '"command":"core_policy_probe"' in workflow
+    assert "Java core policy probe:" in workflow
     assert "Voice dependency probe:" in workflow
     assert "RnD-Workbench-Windows-voice-ready-unsigned-QA" in workflow
 

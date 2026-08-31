@@ -37,13 +37,16 @@ RnD Workbench — локальный по умолчанию персональ�
   состояниями одного `BrowserWindow`; WebAudio capture/playback, Faster-Whisper,
   один короткий OmniVoice-Fast TTS-запрос и barge-in проходят source contracts.
   Готовые транскрипты, локальные аудиофайлы и пакеты eXpress импортируются;
-  Windows CI собирает unsigned text-first portable package и запускает packaged
-  backend smoke-test. Capability голоса остаётся выключенной без локальных
-  runtime; Windows voice hardware QA и подписанная пилотная сборка ещё не
-  выполнены.
+  Windows CI собирает unsigned voice-ready portable package и запускает
+  packaged backend smoke-test. Capability голоса остаётся выключенной без
+  локальных весов Whisper и OmniVoice-Fast server; Windows voice hardware QA и
+  подписанная пилотная сборка ещё не выполнены.
 - Java 21 `core-java` содержит общие политики, executable stdio JSONL 1.0 и
-  persistent SQLite idempotency journal; 42 JUnit проходят, но desktop-адаптеры
-  ещё не запускают этот процесс.
+  persistent SQLite idempotency journal. Windows backend запускает
+  metadata-only route gate до LLM, а portable package включает ограниченный
+  `jlink` runtime; Python fallback видим пользователю и несовпадение политик
+  блокирует запрос. macOS route adapter и Java claim/result для внешних действий
+  ещё не подключены.
 
 ## Архитектура и границы
 
@@ -83,8 +86,9 @@ PYTHONPATH=src .venv/bin/python -m pytest
 выпускается только после завершения проекта и не входит в эту промежуточную
 контрольную точку.
 
-Полный Python/UI-набор содержит 362 теста и проходит; в него входят 20 macOS и
-52 Windows contract-теста. Отдельные 42 JUnit-теста `core-java` проходят локально
-и в Linux CI на JDK 21/Gradle 9.7.1. Windows JDK job, jlink packaging и
-desktop-интеграция всё равно обязательны перед включением Java core в пилотную
-поставку.
+Полный Python/UI-набор содержит 371 тест и проходит; в него входят 20 macOS, 56
+Windows contract-тестов и Python ↔ Java golden contracts. Отдельные 42
+JUnit-теста `core-java` проходят локально и в Linux CI на JDK 21/Gradle 9.7.1.
+Windows job собирает `jlink` runtime, выполняет реальный IPC probe и проверяет
+его из packaged backend. Реальный Windows hardware QA, подпись и macOS adapter
+по-прежнему обязательны перед пилотной поставкой.

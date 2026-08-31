@@ -26,12 +26,13 @@ Faster-Whisper weights и loopback OmniVoice-Fast server Python-мост чес�
 | Корпоративная модель | Готово в исходниках | Удалённый OpenAI-compatible HTTPS endpoint; ключ только в памяти процесса |
 | Рабочие пространства и задачи | Частично | SQLite-история и задачи работают; полный macOS-набор экранов не перенесён |
 | Политика данных | Готово для чата | Local допускает локальный контекст; corporate ограничен классификацией и ручным контекстом |
+| Java 21 route gate | Проверено локально и в CI | Перед LLM Python передаёт в companion только классификацию, предпочтение и доступность маршрутов; несовпадение блокирует запрос, сбой включает видимый Python fallback |
 | Голосовой ввод, STT | Готово в исходниках | Electron WebAudio → mono PCM16/16 кГц, adaptive VAD/pre-roll и Faster-Whisper; нужен Windows hardware QA |
 | Глобальная диктовка | Готово в исходниках | Удержание F8 записывает речь, отпускание вставляет текст через UI Automation/SendInput; secure fields отклоняются, нужен Windows hardware QA |
 | TTS, единый голос, перебивание | Готово в исходниках | Один короткий OmniVoice-Fast запрос с фиксированными profile/seed, PCM stream, limiter, 12-мс fade и barge-in; акустические SLO не измерены |
 | Импорт встреч eXpress | Готово в исходниках | Локальный Faster-Whisper обрабатывает выбранный аудиофайл; также доступны готовый транскрипт и пакет с provenance. Нужен Windows hardware QA |
 | Jira / Kaiten / Confluence / почта / календарь | Не подключено | Нужны корпоративные API, OAuth/SSO и тестовые стенды |
-| Voice-ready portable QA artifact | Проверено в CI | Frozen backend импортирует Faster-Whisper, CTranslate2 и Tokenizers; artifact хранится семь дней |
+| Voice-ready portable QA artifact | Проверено в CI | Frozen backend импортирует Faster-Whisper, CTranslate2 и Tokenizers, запускает bundled Java route gate; artifact хранится семь дней |
 | Подписанный установщик | Не проверено | Windows CI создаёт unsigned portable artifact; веса Whisper, OmniVoice server, подпись и hardware QA не входят в эту проверку |
 
 Статусы «в исходниках» означают, что код и автоматические контрактные тесты
@@ -47,7 +48,7 @@ Electron main process — единственный BrowserWindow
         │ JSON Lines через stdin/stdout
 Windows core service
         ├─ Python bridge: chat + STT/OmniVoice adapters
-        └─ Java 21 core: отдельный IPC 1.0, пока не подключён оболочкой
+        └─ Java 21 companion: metadata-only route gate через IPC 1.0
 ```
 
 Renderer не получает Node.js API и не открывает внешние страницы. В main
@@ -57,16 +58,21 @@ process включены `contextIsolation`, `sandbox`, `nodeIntegration=false` 
 
 JSONL остаётся целевой границей. Переменная
 `RND_WORKBENCH_CORE_EXECUTABLE` позволяет в разработке явно подставить другой
-исполняемый core. В текущей packaged-сборке Electron использует только
-`resources/backend/rnd-workbench-backend.exe`. Java core уже имеет executable
-stdio JSONL 1.0, строгие схемы и persistent action journal, но desktop adapter
-ещё не подключает этот процесс; текущий voice path не выдаёт его за активный.
+исполняемый Python/ML core. В packaged-сборке Electron запускает
+`resources/backend/rnd-workbench-backend.exe`, а тот — bundled Java 21 companion
+из `resources/java-core`. В Java уходят только enum/boolean metadata политики;
+prompt, транскрипты, документы, ответы модели и ключи остаются в Python/native
+runtime. При несовпадении политик LLM не вызывается, а при недоступности Java
+интерфейс явно показывает резервную встроенную Python-политику. Persistent
+action journal уже входит в Java core, но внешние connector actions пока его не
+используют.
 
 ## Запуск из репозитория на Windows
 
-Требуются Node.js LTS и Python 3.11+. Windows-окружение намеренно не устанавливает
-root-пакет с Apple-only MLX-зависимостями. Для text-first сборки используйте
-`windows/requirements-build.txt`, для voice runtime —
+Требуются Node.js LTS и Python 3.11+. Для полной portable-сборки также нужны JDK
+21 с `jlink` и Gradle 9.7.1. Windows-окружение намеренно не устанавливает
+root-пакет с Apple-only MLX-зависимостями. Базовые зависимости сборки находятся
+в `windows/requirements-build.txt`, voice runtime — в
 `windows/requirements-voice.txt`.
 
 Electron зафиксирован на версии 44.0.0, electron-builder — 26.15.3; committed
@@ -127,8 +133,10 @@ deployment-настройки, которые проверяются при за
 Результат создаётся в `windows\dist\electron`. GitHub Actions выполняет этот шаг
 на Windows runner, запускает packaged backend smoke-test и сохраняет unsigned
 voice-ready QA artifact на семь дней. Frozen backend включает библиотеки
-Faster-Whisper/CTranslate2/Tokenizers и проходит их runtime-import probe, но не
-включает веса Whisper или OmniVoice-Fast server. Artifact не считается пилотной
+Faster-Whisper/CTranslate2/Tokenizers и проходит их runtime-import probe. Рядом
+упаковываются Java libraries, ограниченный JDK 21 `jlink` image и лицензионные
+уведомления; packaged smoke-test делает реальный health/route probe. Artifact не
+включает веса Whisper или OmniVoice-Fast server и не считается пилотной
 поставкой до подписи, smoke-test на чистой Windows 11 и hardware/acoustic QA.
 
 ## Следующий обязательный этап голоса

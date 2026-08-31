@@ -16,6 +16,7 @@ const state = {
   toastTimer: null,
   meetingImporting: false,
   meetingImportKind: "",
+  javaFallbackNotified: false,
   ptt: {
     sttAvailable: false,
     sttDetail: "Faster-Whisper не настроен",
@@ -850,12 +851,23 @@ function renderRuntime() {
   const provider = state.runtime.provider_type;
   const route = ready && provider === "local" ? "local" : ready && provider === "corporate" ? "corporate" : "unconfigured";
   document.body.dataset.route = route;
-  byId("routeLabel").textContent = route === "local"
+  const routeLabel = byId("routeLabel");
+  routeLabel.textContent = route === "local"
     ? "локальная модель · данные на устройстве"
     : route === "corporate"
       ? "корпоративная модель · защищённый API"
       : state.runtime.base_url ? "модель требует настройки" : "модель не настроена";
   byId("sidebarStatus").textContent = route === "local" ? "Локальный контур" : route === "corporate" ? "Корпоративный контур" : "Нужна настройка";
+  const javaPolicy = state.platform.java_core_policy || {};
+  routeLabel.title = javaPolicy.ready
+    ? "Маршрутизация проверяется Java 21 core"
+    : javaPolicy.configured
+      ? "Java 21 core временно недоступен; действует резервная Python-политика"
+      : "Java 21 core не настроен в development-режиме";
+  if (javaPolicy.configured && !javaPolicy.ready && !state.javaFallbackNotified) {
+    state.javaFallbackNotified = true;
+    toast("Java core недоступен — действует резервная встроенная политика");
+  }
 }
 
 function voiceDiagnosticText() {

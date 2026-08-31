@@ -208,9 +208,9 @@ function backendLaunchSpec() {
   }
 
   if (app.isPackaged) {
-    // This milestone bundles only the tested Python JSONL bridge. A future
-    // core may use the explicit executable override after its IPC schema is
-    // implemented and versioned; no Java runtime is implied here.
+    // The Python JSONL process owns ML/audio and starts the bundled Java 21
+    // companion for metadata-only policy decisions. Electron still speaks to
+    // one backend process, so the renderer never receives a Java classpath.
     return {
       command: path.join(process.resourcesPath, "backend", "rnd-workbench-backend.exe"),
       args: ["--data", dataPath],
@@ -239,6 +239,25 @@ function backendLaunchSpec() {
     ],
     kind: "python-bridge",
   };
+}
+
+function backendEnvironment() {
+  const environment = { ...process.env, PYTHONUTF8: "1", PYTHONUNBUFFERED: "1" };
+  if (app.isPackaged) {
+    environment.RND_WORKBENCH_JAVA_CORE_JAVA = path.join(
+      process.resourcesPath,
+      "java-core",
+      "runtime",
+      "bin",
+      "java.exe",
+    );
+    environment.RND_WORKBENCH_JAVA_CORE_LIB_DIR = path.join(
+      process.resourcesPath,
+      "java-core",
+      "lib",
+    );
+  }
+  return environment;
 }
 
 function createMainWindow() {
@@ -347,7 +366,7 @@ function startBackend() {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
-      env: { ...process.env, PYTHONUTF8: "1", PYTHONUNBUFFERED: "1" },
+      env: backendEnvironment(),
     });
   } catch (error) {
     emitBackendEvent({ type: "fatal", message: `Не удалось запустить core (${error.name})` });

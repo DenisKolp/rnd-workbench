@@ -30,6 +30,14 @@
         "to": "backend/rnd-workbench-backend.exe"
       },
       {
+        "from": "../dist/java-core",
+        "to": "java-core"
+      },
+      {
+        "from": "../dist/licenses",
+        "to": "licenses"
+      },
+      {
         "from": "ptt-hotkey.ps1",
         "to": "ptt/ptt-hotkey.ps1"
       },

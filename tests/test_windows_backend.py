@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from voice_assistant.java_core import JavaRouteDecision
 from voice_assistant.store import AssistantStore
 from voice_assistant.windows_backend import (
     EventEmitter,
@@ -119,6 +120,46 @@ class FakeVoiceRuntime:
 
     def close(self) -> None:
         return
+
+
+class FakeCorePolicy:
+    def __init__(
+        self,
+        *,
+        ready: bool = True,
+        decision: JavaRouteDecision | None = None,
+    ) -> None:
+        self.configured = True
+        self.ready = ready
+        self.decision = decision
+        self.calls: list[dict[str, object]] = []
+        self.closed = False
+
+    def start(self) -> bool:
+        return self.ready
+
+    def diagnostics(self):  # noqa: ANN201
+        return {
+            "configured": self.configured,
+            "ready": self.ready,
+            "protocol_version": "1.0" if self.ready else None,
+            "policy": "java21" if self.ready else "python_fallback",
+        }
+
+    def decide_route(self, **kwargs):  # noqa: ANN003, ANN201
+        self.calls.append(dict(kwargs))
+        if self.decision is not None:
+            return self.decision
+        route = str(kwargs["preference"]).upper()
+        return JavaRouteDecision(
+            status="SELECTED",
+            route=route,
+            reason=f"{route}_SELECTED",
+            local_fallback_before_first_output=False,
+        )
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class DictationOnlyVoiceRuntime(FakeVoiceRuntime):
@@ -278,6 +319,123 @@ def test_text_turn_uses_shared_store_and_json_event_contract(tmp_path) -> None:
     assert messages[-1]["content"] == "Готовый ответ"
     assert metadata["llm_route"]["provider_type"] == "local"
     assert metadata["spoken"] is False
+
+
+def test_windows_text_turn_is_gated_by_java_core_before_llm(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    core = FakeCorePolicy()
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        chat_factory=fake_factory,
+        core_policy=core,
+    )
+    backend.configure_llm(
+        {
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "qwen3:4b",
+            "provider_type": "local",
+        }
+    )
+
+    backend._run_text_turn("Проверь маршрут", threading.Event())
+
+    assert core.calls == [
+        {
+            "classification": "internal",
+            "preference": "LOCAL",
+            "local_available": True,
+            "corporate_available": False,
+            "external_available": False,
+            "corporate_scope_authorized": False,
+            "explicit_external_consent": False,
+        }
+    ]
+    answer = next(event for event in emitter.events if event["type"] == "assistant_end")
+    assert answer["llm_route"]["policy_engine"] == "java21"
+    assert answer["llm_route"]["java_core_reason"] == "LOCAL_SELECTED"
+
+
+def test_java_core_route_disagreement_blocks_api_call_fail_closed(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    core = FakeCorePolicy(
+        decision=JavaRouteDecision(
+            status="BLOCKED",
+            route=None,
+            reason="CLASSIFICATION_BLOCKS_CORPORATE",
+            local_fallback_before_first_output=False,
+        )
+    )
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        chat_factory=fake_factory,
+        core_policy=core,
+    )
+    backend.configure_llm(
+        {
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "qwen3:4b",
+            "provider_type": "local",
+        }
+    )
+
+    backend._run_text_turn("Не отправляй запрос", threading.Event())
+
+    assert any(event["type"] == "routing_blocked" for event in emitter.events)
+    assert not any(event["type"] == "assistant_start" for event in emitter.events)
+    assert backend.store.get_task(backend.current_task_id)["status"] == "needs_user"
+
+
+def test_unavailable_java_core_uses_visible_python_policy_fallback(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    core = FakeCorePolicy(ready=False)
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        chat_factory=fake_factory,
+        core_policy=core,
+    )
+    backend.configure_llm(
+        {
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "qwen3:4b",
+            "provider_type": "local",
+        }
+    )
+
+    backend._run_text_turn("Используй fallback", threading.Event())
+
+    answer = next(event for event in emitter.events if event["type"] == "assistant_end")
+    assert answer["llm_route"]["policy_engine"] == "python_fallback"
+    assert answer["llm_route"]["java_core_ready"] is False
+    snapshot = next(event for event in reversed(emitter.events) if event["type"] == "snapshot")
+    assert snapshot["data"]["platform"]["java_core_policy"]["ready"] is False
+
+
+def test_core_policy_probe_contains_only_safe_contract_metadata(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        core_policy=FakeCorePolicy(),
+    )
+
+    backend.handle({"command": "core_policy_probe"})
+
+    diagnostic = emitter.events[-1]
+    assert diagnostic == {
+        "type": "diagnostic",
+        "component": "java_core",
+        "check": "route_policy",
+        "measured": True,
+        "configured": True,
+        "ready": True,
+        "protocol_version": "1.0",
+        "status": "SELECTED",
+        "route": "LOCAL",
+        "reason": "LOCAL_SELECTED",
+    }
 
 
 def test_voice_command_reports_actionable_diagnostics_when_runtime_is_absent(tmp_path) -> None:

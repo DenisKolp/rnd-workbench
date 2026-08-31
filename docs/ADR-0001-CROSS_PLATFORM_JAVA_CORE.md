@@ -147,18 +147,16 @@ Loopback transport остаётся допустимым будущим вари
 
 Ограничения:
 
-- desktop/Python bridge ещё не запускает Java core, поэтому новые правила пока
-  доступны через отдельный CLI, но не участвуют в основном runtime приложения;
-- нужен JRE 21 в дистрибутиве или jlink runtime image;
+- Windows/Python bridge запускает Java core только для read-only routing;
+  Swift/macOS и connector action paths пока не подключены;
+- Windows QA artifact вырос из-за bundled `jlink` runtime и Java libraries;
 - версия схемы и совместимость процессов становятся отдельным контрактом;
 - SQLite journal не может атомарно коммитить транзакцию вместе с произвольным
   Jira/Kaiten/Confluence API; зависшие claims требуют connector reconciliation.
 
 ## План внедрения
 
-1. Добавить Windows CI для проходящего локально `core-java` на JDK 21.
-2. Добавить golden contract tests схемы `1.0` в Python и TypeScript adapters.
-3. Первым подключить read-only model routing без изменения voice path.
-4. Перевести preview/confirmation интеграционных действий на Java claim/result.
-5. Реализовать connector reconciliation для зависших claims до production writes.
-6. После пилотного soak-test удалить дублирующие политики из оболочек.
+1. Подключить тот же metadata-only route gate в macOS/Swift path.
+2. Перевести preview/confirmation интеграционных действий на Java claim/result.
+3. Реализовать connector reconciliation для зависших claims до production writes.
+4. После пилотного soak-test удалить дублирующие политики из оболочек.

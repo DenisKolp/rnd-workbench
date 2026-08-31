@@ -36,6 +36,12 @@ from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
 
+from .java_core import (
+    CorePolicyRuntime,
+    JavaCorePolicyClient,
+    JavaCoreProtocolError,
+    JavaCoreUnavailable,
+)
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
 from .store import AssistantStore
 from .text import SentenceChunker, SpeechExcerptBuilder, normalize_for_omnivoice_speech
@@ -808,6 +814,7 @@ class WindowsPilotBackend:
         *,
         chat_factory: ChatFactory = OpenAIChatClient,
         voice_runtime: VoiceRuntime | None = None,
+        core_policy: CorePolicyRuntime | None = None,
     ) -> None:
         self.emitter = emitter
         self.store = AssistantStore(data_path)
@@ -823,6 +830,12 @@ class WindowsPilotBackend:
         self._chat_factory = chat_factory
         self._chat: OpenAIChatClient | None = None
         self._voice_runtime = voice_runtime or PortableWindowsVoiceRuntime.from_environment()
+        self._core_policy = core_policy or JavaCorePolicyClient.from_environment(data_path)
+        self._active_policy_metadata: dict[str, Any] = {
+            "policy_engine": "python_fallback",
+            "java_core_ready": False,
+            "java_core_reason": "not_started",
+        }
         self._voice_session_active = False
         self._voice_input: bytearray | None = None
         self._voice_expected_sequence = 0
@@ -840,6 +853,17 @@ class WindowsPilotBackend:
         self._restore_chat()
 
     def load(self) -> None:
+        java_ready = self._core_policy.start()
+        java_diagnostics = self._core_policy.diagnostics()
+        self.emitter.emit(
+            "diagnostic",
+            component="java_core",
+            check="policy_runtime",
+            measured=True,
+            configured=bool(java_diagnostics.get("configured")),
+            ready=java_ready,
+            protocol_version=java_diagnostics.get("protocol_version"),
+        )
         self.emitter.emit(
             "state",
             state="ready" if self._runtime()["ready"] else "needs_configuration",
@@ -906,6 +930,8 @@ class WindowsPilotBackend:
                 ready=probe["ready"],
                 components=probe["components"],
             )
+        elif name == "core_policy_probe":
+            self.probe_core_policy()
         elif name == "voice_self_check":
             self.emit_voice_capability()
             self.emitter.emit(
@@ -967,6 +993,7 @@ class WindowsPilotBackend:
             self._meeting_import_cancel_event.set()
             self.cancel_turn()
             self.cancel_ptt_dictation("shutdown")
+            self._core_policy.close()
         else:
             self.emitter.emit("error", message=f"Неизвестная команда: {name}")
 
@@ -2154,6 +2181,7 @@ class WindowsPilotBackend:
         )
         self.current_workspace_id = turn.workspace_id
         self.current_task_id = turn.task_id
+        self._verify_java_route(turn)
         self.emitter.emit("user", text=turn.user_text, task_id=turn.task_id)
         self.emitter.emit(
             "task_context",
@@ -2175,6 +2203,131 @@ class WindowsPilotBackend:
                 message="Чувствительный автоматически подобранный контекст не передан модели",
             )
         return turn
+
+    def probe_core_policy(self) -> None:
+        """Prove the local Java route gate without sending user content."""
+
+        ready = self._core_policy.ready or self._core_policy.start()
+        status = "UNAVAILABLE"
+        route: str | None = None
+        reason = "CORE_UNAVAILABLE"
+        if ready:
+            try:
+                decision = self._core_policy.decide_route(
+                    classification="public",
+                    preference="local",
+                    local_available=True,
+                    corporate_available=False,
+                )
+                status = decision.status
+                route = decision.route
+                reason = decision.reason
+                ready = status == "SELECTED" and route == "LOCAL"
+            except (JavaCoreUnavailable, JavaCoreProtocolError, ValueError):
+                self._core_policy.close()
+                ready = False
+        diagnostics = self._core_policy.diagnostics()
+        self.emitter.emit(
+            "diagnostic",
+            component="java_core",
+            check="route_policy",
+            measured=True,
+            configured=bool(diagnostics.get("configured")),
+            ready=ready,
+            protocol_version=diagnostics.get("protocol_version"),
+            status=status,
+            route=route,
+            reason=reason,
+        )
+
+    def _verify_java_route(self, turn: TurnContext) -> None:
+        policy = turn.policy
+        if policy is None:
+            self._active_policy_metadata = {
+                "policy_engine": "python_fallback",
+                "java_core_ready": False,
+                "java_core_reason": "python_policy_missing",
+            }
+            return
+        if not self._core_policy.ready and self._core_policy.configured:
+            self._core_policy.start()
+        if not self._core_policy.ready:
+            self._active_policy_metadata = {
+                "policy_engine": "python_fallback",
+                "java_core_ready": False,
+                "java_core_reason": (
+                    "unavailable" if self._core_policy.configured else "not_configured"
+                ),
+            }
+            return
+
+        expected_route = policy.route.casefold()
+        runtime = self._runtime()
+        provider_type = str(runtime.get("provider_type") or "unconfigured")
+        preference = expected_route.upper()
+        try:
+            decision = self._core_policy.decide_route(
+                classification=policy.effective_classification,
+                preference=preference,
+                local_available=provider_type == "local",
+                corporate_available=provider_type == "corporate",
+                external_available=provider_type == "external",
+                corporate_scope_authorized=provider_type == "corporate",
+                explicit_external_consent=False,
+            )
+        except (JavaCoreUnavailable, JavaCoreProtocolError, ValueError):
+            self._core_policy.close()
+            self._active_policy_metadata = {
+                "policy_engine": "python_fallback",
+                "java_core_ready": False,
+                "java_core_reason": "runtime_failure",
+            }
+            self.emitter.emit(
+                "diagnostic",
+                component="java_core",
+                check="route_policy",
+                measured=True,
+                configured=True,
+                ready=False,
+                fallback="python_policy",
+            )
+            return
+
+        self._active_policy_metadata = {
+            "policy_engine": "java21",
+            "java_core_ready": True,
+            "java_core_status": decision.status,
+            "java_core_reason": decision.reason,
+        }
+        selected_route = (decision.route or "").casefold()
+        if decision.status == "SELECTED" and selected_route == expected_route:
+            return
+
+        self.store.update_task(turn.task_id, status="needs_user")
+        self.store.add_task_event(
+            turn.task_id,
+            "routing_blocked",
+            "Java core заблокировал маршрут",
+            f"status={decision.status};reason={decision.reason}",
+        )
+        self.store.audit(
+            turn.task_id,
+            "llm.java_route_blocked",
+            expected_route,
+            "error",
+            f"status={decision.status};reason={decision.reason}",
+        )
+        raise RoutingPolicyError(
+            "Передача заблокирована общей политикой Java core. "
+            "Используйте разрешённый локальный или корпоративный маршрут.",
+            workspace_id=turn.workspace_id,
+            task_id=turn.task_id,
+            user_text=turn.user_text,
+            route=expected_route,
+            allowed_max=policy.allowed_max,
+            effective_classification=policy.effective_classification,
+            blocked_refs=[],
+        )
 
     def emit_snapshot(self) -> None:
         snapshot = self.store.snapshot(
@@ -2207,6 +2360,7 @@ class WindowsPilotBackend:
             "text_chat_available": True,
             "full_window_available": True,
             "full_feature_parity": False,
+            "java_core_policy": self._core_policy.diagnostics(),
         }
         self.emitter.emit("snapshot", data=snapshot)
 
@@ -2267,6 +2421,7 @@ class WindowsPilotBackend:
             "model": runtime["model"],
             "selection_reason": "windows_pilot_explicit_endpoint",
             "fallback_used": False,
+            **self._active_policy_metadata,
         }
 
     def _busy(self) -> bool:
@@ -2324,6 +2479,7 @@ def main() -> None:
         if backend is not None:
             backend.cancel_turn()
             backend._voice_runtime.close()
+            backend._core_policy.close()
 
 
 if __name__ == "__main__":

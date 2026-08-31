@@ -140,6 +140,8 @@ lease expiry нет, поскольку оно создало бы риск ду
 - `3` — недоступен runtime/journal/stdin;
 - `4` — ошибка записи `stdout`.
 
-Обязательный аргумент `--journal` задаёт отдельный SQLite-файл профиля. UI
-адаптеры Python/Electron/Swift пока не подключены к этому процессу и составляют
-следующий вертикальный инкремент.
+Обязательный аргумент `--journal` задаёт отдельный SQLite-файл профиля. Windows
+Python backend уже запускает процесс для metadata-only `health.check` и
+`route.decide`; Electron получает только безопасную диагностику. Swift/macOS и
+connector action adapters пока не подключены и составляют следующие
+вертикальные инкременты.
