@@ -76,8 +76,9 @@
             </div>
             <div id="messages" class="messages" role="log" aria-live="polite"></div>
             <div class="composer">
+              <div class="composer-suggestions" id="composerSuggestions" role="listbox" aria-label="Подсказки ввода" hidden></div>
               <label class="sr-only" for="composerInput">Сообщение</label>
-              <textarea id="composerInput" rows="1" placeholder="Сообщение…"></textarea>
+              <textarea id="composerInput" rows="1" placeholder="Сообщение…" aria-autocomplete="list" aria-controls="composerSuggestions" aria-expanded="false"></textarea>
               <button id="stopButton" class="secondary-button" title="Остановить ответ" hidden>Стоп</button>
               <button id="sendButton" class="send-button">Отправить</button>
             </div>
@@ -126,10 +127,18 @@
           </section>
           <details class="context-library" id="contextLibrary">
             <summary>
-              <span>Источники и материалы</span>
+              <span>Контекст задачи</span>
               <span id="contextLibraryCount">0</span>
             </summary>
             <div class="context-library-content">
+              <section aria-labelledby="taskPlanTitle">
+                <div class="context-section-heading">
+                  <strong id="taskPlanTitle">План</strong>
+                  <span id="taskPlanCount">0 шагов</span>
+                </div>
+                <ol class="task-plan-list" id="taskPlanList"></ol>
+                <p class="task-plan-help">Изменяйте сообщением: «добавь в план…», «замени шаг 2 на…» или «удали шаг 2».</p>
+              </section>
               <section aria-labelledby="sourceListTitle">
                 <strong id="sourceListTitle">Источники</strong>
                 <div class="context-entity-list" id="sourceList"></div>

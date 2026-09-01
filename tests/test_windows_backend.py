@@ -415,6 +415,92 @@ def test_text_turn_uses_shared_store_and_json_event_contract(tmp_path) -> None:
     assert usage["voice_turns"] == 0
 
 
+def test_windows_task_plan_commands_are_local_and_do_not_require_an_llm(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)
+    task = backend.store.create_task(
+        backend.current_workspace_id,
+        "Пилот команды",
+        plan=["Собрать факты", "Подготовить черновик"],
+    )
+    backend.current_task_id = str(task["id"])
+
+    for command in (
+        "добавь в план Согласовать результат",
+        "замени шаг 2 на Проверить бюджет",
+        "удали шаг 1",
+    ):
+        backend._run_text_turn(command, threading.Event())
+
+    current = backend.store.get_task(str(task["id"]))
+    assert current["plan"] == ["Проверить бюджет", "Согласовать результат"]
+    updates = [event for event in emitter.events if event["type"] == "plan_updated"]
+    answers = [event for event in emitter.events if event["type"] == "assistant_end"]
+    assert [event["result"]["action"] for event in updates] == [
+        "add",
+        "replace",
+        "delete",
+    ]
+    assert len(answers) == 3
+    assert all(answer["llm_route"] == {
+        "requested_route": "local",
+        "actual_route": "local_command",
+        "provider_type": "local",
+        "policy_engine": "deterministic",
+        "content_transmitted": False,
+    } for answer in answers)
+    assert not any(event["type"] == "error" for event in emitter.events)
+    messages = backend.store.messages(str(task["id"]))
+    metadata = json.loads(messages[-1]["metadata"])
+    assert metadata["local_command"] == "task_plan"
+    assert metadata["plan_action"] == "delete"
+    assert backend.store.pilot_usage_summary(platform="windows")["text_turns"] == 3
+    assert [event for event in emitter.events if event["type"] == "state"][-1][
+        "state"
+    ] == "needs_configuration"
+
+
+def test_windows_invalid_plan_command_shows_local_help_before_model_setup(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)
+
+    backend.submit_text("добавь шаг в план")
+
+    error = next(event for event in reversed(emitter.events) if event["type"] == "error")
+    assert "добавь в план" in str(error["message"])
+    assert "Настройте" not in str(error["message"])
+    assert backend._worker is None
+
+
+def test_windows_voice_plan_command_uses_one_local_tts_reply_without_llm(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    voice = FakeVoiceRuntime()
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        voice_runtime=voice,
+    )
+    task = backend.store.create_task(
+        backend.current_workspace_id,
+        "Голосовой план",
+        plan=["Проверить данные", "Сохранить результат"],
+    )
+    backend.current_task_id = str(task["id"])
+
+    backend._run_text_turn(
+        "добавь в план Обсудить с командой",
+        threading.Event(),
+        spoken=True,
+        voice_turn_started_at=time.perf_counter(),
+    )
+
+    answer = next(event for event in emitter.events if event["type"] == "assistant_end")
+    assert answer["spoken"] is True
+    assert voice.spoken_texts == ["Добавил шаг 3: «Обсудить с командой»."]
+    assert [event["type"] for event in emitter.events].count("audio_start") == 1
+    assert [event["type"] for event in emitter.events].count("audio_end") == 1
+
+
 def test_windows_pilot_feedback_command_is_bounded_and_content_free(tmp_path) -> None:
     emitter = CapturingEmitter()
     backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)

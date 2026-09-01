@@ -486,7 +486,9 @@ def test_windows_source_and_artifact_controls_are_collapsed_and_fragment_aware()
     )
 
     assert '<details class="context-library" id="contextLibrary">' in html
-    assert "<span>Источники и материалы</span>" in html
+    assert "<span>Контекст задачи</span>" in html
+    assert 'id="taskPlanList"' in html
+    assert "добавь в план…" in html
     assert 'id="sourceFragmentDialog"' in html
     assert 'id="artifactHistoryDialog"' in html
     assert 'id="taskClassification"' in html
@@ -506,6 +508,34 @@ def test_windows_source_and_artifact_controls_are_collapsed_and_fragment_aware()
         '<section class="chat-card"', maxsplit=1
     )[0]
     assert "contextLibrary" not in compact_section
+
+
+def test_windows_composer_autocompletes_skills_and_sources_without_new_buttons() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+    styles = (ROOT / "windows" / "electron" / "renderer" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="composerSuggestions" role="listbox"' in html
+    assert 'aria-autocomplete="list"' in html
+    assert 'aria-controls="composerSuggestions"' in html
+    assert "function availableComposerSuggestions()" in renderer
+    assert "state.snapshot.skills" in renderer
+    assert "state.snapshot.sources" in renderer
+    assert "function applyComposerSuggestion(suggestion)" in renderer
+    assert '["ArrowDown", "ArrowUp"]' in renderer
+    assert '["Tab", "Enter"]' in renderer
+    assert 'case "plan_updated":' in renderer
+    assert 'byId("contextLibrary").open = true;' in renderer
+    assert ".composer-suggestions { position: absolute;" in styles
+    assert ".composer-suggestion strong, .composer-suggestion span" in styles
+    assert "text-overflow: ellipsis" in styles
+    composer = html.split('<div class="composer">', maxsplit=1)[1].split(
+        "</div>", maxsplit=1
+    )[0]
+    assert "composerSuggestions" in composer
+    assert "Добавить" not in composer
 
 
 def test_renderer_uses_short_mode_copy_and_safe_local_settings_default() -> None:

@@ -93,6 +93,11 @@ RnD Workbench — локальный по умолчанию персональ�
   без добавления постоянных кнопок в compact voice-first поверхность. Визуальная
   проверка на разблокированной графической сессии и реальном Windows-устройстве
   остаётся обязательной.
+- macOS и Windows предлагают скиллы по `/` и источники по `@` прямо в поле
+  ввода. Windows-план, источники и материалы объединены в один свёрнутый
+  «Контекст задачи»; обычные фразы добавляют, заменяют и удаляют шаг плана до
+  вызова LLM. Голосовая команда получает один короткий TTS-ответ. Текст и план
+  остаются в Python/SQLite-контуре и не расширяют metadata-only границу Java 21.
 - Java 21 `core-java` содержит общие политики, executable stdio JSONL 1.0 и
   persistent SQLite idempotency journal. macOS и Windows backend запускают
   metadata-only route gate до LLM, а обе сборки включают ограниченный `jlink`
@@ -144,7 +149,7 @@ PYTHONPATH=src .venv/bin/python -m pytest
 выпускается только после завершения проекта и не входит в эту промежуточную
 контрольную точку.
 
-Полный Python/UI-набор содержит 480 тестов и проходит; в него входят 31 macOS, 82
+Полный Python/UI-набор содержит 484 теста и проходит; в него входят 31 macOS, 86
 Windows contract-теста и Python ↔ Java golden contracts. Отдельные 45
 JUnit-теста `core-java` проходят локально и в Linux CI на JDK 21/Gradle 9.7.1.
 Windows job собирает `jlink` runtime, выполняет реальные route/action journal

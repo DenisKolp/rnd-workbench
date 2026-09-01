@@ -2712,10 +2712,16 @@ class WindowsPilotBackend:
         if self._busy():
             self.emitter.emit("error", message="Дождитесь завершения текущего ответа")
             return
-        runtime = self._runtime()
-        if not runtime["ready"]:
-            self.emitter.emit("error", message=runtime["detail"])
+        try:
+            plan_command = self.orchestrator.plan_command(text)
+        except ValueError as exc:
+            self.emitter.emit("error", message=str(exc))
             return
+        if plan_command is None:
+            runtime = self._runtime()
+            if not runtime["ready"]:
+                self.emitter.emit("error", message=runtime["detail"])
+                return
         cancel_event = threading.Event()
         worker = threading.Thread(
             target=self._run_text_turn,
@@ -2727,6 +2733,125 @@ class WindowsPilotBackend:
             self._cancel_event = cancel_event
             self._worker = worker
         worker.start()
+
+    def _try_task_plan_request(
+        self,
+        text: str,
+        cancel_event: threading.Event,
+        *,
+        spoken: bool,
+        started: float,
+        voice_turn_started_at: float | None,
+    ) -> bool:
+        """Apply one bounded local plan command before selecting an LLM route."""
+
+        try:
+            plan_command = self.orchestrator.plan_command(text)
+        except ValueError as exc:
+            self.emitter.emit("error", message=str(exc))
+            return True
+        if plan_command is None:
+            return False
+        if not self.current_task_id:
+            self.emitter.emit(
+                "error",
+                message="Сначала выберите задачу, план которой нужно изменить",
+            )
+            return True
+        try:
+            result = self.orchestrator.mutate_task_plan(text, self.current_task_id)
+        except (KeyError, ValueError) as exc:
+            self.emitter.emit("error", message=str(exc))
+            return True
+        if result is None:
+            return False
+
+        task = self.store.get_task(self.current_task_id)
+        self.current_workspace_id = str(task["workspace_id"])
+        classification = str(task["classification"])
+        reply = str(result["message"])
+        route = {
+            "requested_route": "local",
+            "actual_route": "local_command",
+            "provider_type": "local",
+            "policy_engine": "deterministic",
+            "content_transmitted": False,
+        }
+        self.store.add_message(
+            str(task["id"]),
+            "user",
+            text,
+            classification=classification,
+        )
+        speech_result: dict[str, Any] = {
+            "spoken": False,
+            "spoken_text": reply if spoken else "",
+            "tts_error": None,
+            "first_audio_seconds": None,
+            "tts_rtf": None,
+        }
+        self.emitter.emit("user", text=text, task_id=str(task["id"]))
+        self.emitter.emit(
+            "assistant_start",
+            task_id=str(task["id"]),
+            skill=None,
+            sources=[],
+            llm_route=route,
+        )
+        self.emitter.emit("state", state="thinking", detail="Обновляю план…")
+        self.emitter.emit("assistant_delta", text=reply)
+        if spoken and not cancel_event.is_set():
+            self._stream_voice_speech(
+                reply,
+                cancel_event,
+                speech_result,
+                timing_origin=voice_turn_started_at or started,
+            )
+        elapsed = round(time.perf_counter() - started, 3)
+        performance: dict[str, float] = {"total_seconds": elapsed}
+        if speech_result["first_audio_seconds"] is not None:
+            performance["first_audio_seconds"] = float(
+                speech_result["first_audio_seconds"]
+            )
+        if speech_result["tts_rtf"] is not None:
+            performance["tts_rtf"] = float(speech_result["tts_rtf"])
+        self.store.add_message(
+            str(task["id"]),
+            "assistant",
+            reply,
+            metadata={
+                "deterministic": True,
+                "local_command": "task_plan",
+                "plan_action": result["action"],
+                "plan_index": result["index"],
+                "llm_route": route,
+                "spoken": bool(speech_result["spoken"]),
+                "spoken_text": str(speech_result["spoken_text"]),
+                "tts_error": speech_result["tts_error"],
+                "performance": performance,
+            },
+            classification=classification,
+        )
+        self._record_pilot_usage(
+            "voice_turn_completed" if spoken else "text_turn_completed"
+        )
+        self.emitter.emit("plan_updated", result=result)
+        self.emitter.emit(
+            "assistant_end",
+            text=reply,
+            seconds=elapsed,
+            interrupted=False,
+            task_id=str(task["id"]),
+            artifact=None,
+            spoken=bool(speech_result["spoken"]),
+            spoken_text=str(speech_result["spoken_text"]),
+            tts_error=speech_result["tts_error"],
+            llm_route=route,
+            performance=performance,
+            quick_actions=[],
+        )
+        self.emit_snapshot()
+        return True
 
     def cancel_turn(self) -> None:
         with self._lock:
@@ -2781,6 +2906,14 @@ class WindowsPilotBackend:
             speech_thread.start()
 
         try:
+            if self._try_task_plan_request(
+                text,
+                cancel_event,
+                spoken=spoken,
+                started=started,
+                voice_turn_started_at=voice_turn_started_at,
+            ):
+                return
             turn = self._prepare_turn(text, spoken=spoken)
             route = self._route_metadata()
             self.emitter.emit(
@@ -2977,7 +3110,12 @@ class WindowsPilotBackend:
             if self._voice_session_active:
                 self.emitter.emit("state", state="listening", detail="Слушаю…")
             else:
-                self.emitter.emit("state", state="ready", detail="Готов к работе")
+                runtime = self._runtime()
+                self.emitter.emit(
+                    "state",
+                    state="ready" if runtime["ready"] else "needs_configuration",
+                    detail="Готов к работе" if runtime["ready"] else runtime["detail"],
+                )
 
     def _stream_voice_speech(
         self,

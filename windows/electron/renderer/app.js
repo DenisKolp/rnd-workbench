@@ -20,6 +20,7 @@ const state = {
   voiceQualificationRunning: false,
   javaFallbackNotified: false,
   artifactHistory: null,
+  composerSuggestionIndex: 0,
   ptt: {
     sttAvailable: false,
     sttDetail: "Faster-Whisper не настроен",
@@ -905,6 +906,118 @@ const audioPlayer = new PcmAudioPlayer();
 const voiceCapture = new VoiceCaptureController(audioPlayer);
 const pttDictation = new PushToTalkDictationController();
 
+function availableComposerSuggestions() {
+  const composer = byId("composerInput");
+  const value = String(composer?.value || "");
+  const leadingTrimmed = value.trimStart();
+  if (/^\/[^\s]*$/.test(leadingTrimmed)) {
+    const query = leadingTrimmed.slice(1).toLocaleLowerCase("ru");
+    const skills = Array.isArray(state.snapshot.skills) ? state.snapshot.skills : [];
+    return skills
+      .filter((skill) => {
+        const command = String(skill.command || "");
+        const name = String(skill.name || "");
+        return command.startsWith("/") && (
+          !query
+          || command.slice(1).toLocaleLowerCase("ru").startsWith(query)
+          || name.toLocaleLowerCase("ru").includes(query)
+        );
+      })
+      .sort((left, right) => String(left.command).localeCompare(String(right.command), "ru"))
+      .slice(0, 6)
+      .map((skill) => ({
+        id: `skill:${String(skill.id || skill.command)}`,
+        kind: "skill",
+        title: String(skill.command),
+        subtitle: String(skill.name || "Скилл"),
+        insertion: String(skill.command),
+      }));
+  }
+
+  const at = value.lastIndexOf("@");
+  if (at < 0) return [];
+  const queryText = value.slice(at + 1);
+  if (/[\s\[\]"]/.test(queryText)) return [];
+  const query = queryText.toLocaleLowerCase("ru");
+  const sources = Array.isArray(state.snapshot.sources) ? state.snapshot.sources : [];
+  return sources
+    .filter((source) => {
+      const title = String(source.title || "");
+      const kind = String(source.kind || "");
+      return !query
+        || title.toLocaleLowerCase("ru").includes(query)
+        || kind.toLocaleLowerCase("ru").includes(query);
+    })
+    .sort((left, right) => String(left.title).localeCompare(String(right.title), "ru"))
+    .slice(0, 6)
+    .map((source) => ({
+      id: `source:${String(source.id || source.title)}`,
+      kind: "source",
+      title: String(source.title || "Источник"),
+      subtitle: String(source.kind) === "meeting" ? "Встреча" : "Источник",
+      insertion: `@[${String(source.title || "Источник").replaceAll("]", ")")}]`,
+    }));
+}
+
+function hideComposerSuggestions() {
+  const suggestions = byId("composerSuggestions");
+  const composer = byId("composerInput");
+  suggestions.hidden = true;
+  suggestions.replaceChildren();
+  composer.setAttribute("aria-expanded", "false");
+  state.composerSuggestionIndex = 0;
+}
+
+function applyComposerSuggestion(suggestion) {
+  const composer = byId("composerInput");
+  if (!suggestion || !(composer instanceof HTMLTextAreaElement)) return false;
+  if (suggestion.kind === "skill") {
+    composer.value = `${suggestion.insertion} `;
+  } else {
+    const at = composer.value.lastIndexOf("@");
+    if (at < 0) return false;
+    composer.value = `${composer.value.slice(0, at)}${suggestion.insertion} `;
+  }
+  hideComposerSuggestions();
+  composer.dispatchEvent(new Event("input", { bubbles: true }));
+  composer.focus();
+  return true;
+}
+
+function renderComposerSuggestions() {
+  const container = byId("composerSuggestions");
+  const composer = byId("composerInput");
+  const suggestions = availableComposerSuggestions();
+  container.replaceChildren();
+  if (!suggestions.length) {
+    hideComposerSuggestions();
+    return;
+  }
+  state.composerSuggestionIndex = Math.min(
+    Math.max(state.composerSuggestionIndex, 0),
+    suggestions.length - 1,
+  );
+  suggestions.forEach((suggestion, index) => {
+    const item = textNode(
+      "button",
+      `composer-suggestion${index === state.composerSuggestionIndex ? " active" : ""}`,
+      "",
+    );
+    item.type = "button";
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", index === state.composerSuggestionIndex ? "true" : "false");
+    item.append(
+      textNode("strong", "", suggestion.title),
+      textNode("span", "", suggestion.subtitle),
+    );
+    item.addEventListener("mousedown", (event) => event.preventDefault());
+    item.addEventListener("click", () => applyComposerSuggestion(suggestion));
+    container.append(item);
+  });
+  container.hidden = false;
+  composer.setAttribute("aria-expanded", "true");
+}
+
 function renderMessages() {
   const container = byId("messages");
   container.replaceChildren();
@@ -990,7 +1103,20 @@ function renderTasks() {
 function renderContextLibrary() {
   const sources = Array.isArray(state.snapshot.sources) ? state.snapshot.sources : [];
   const artifacts = Array.isArray(state.snapshot.artifacts) ? state.snapshot.artifacts : [];
-  byId("contextLibraryCount").textContent = String(sources.length + artifacts.length);
+  const tasks = Array.isArray(state.snapshot.tasks) ? state.snapshot.tasks : [];
+  const currentTask = tasks.find((task) => task.id === state.snapshot.current_task_id);
+  const plan = Array.isArray(currentTask?.plan) ? currentTask.plan : [];
+  byId("contextLibraryCount").textContent = String(plan.length + sources.length + artifacts.length);
+  byId("taskPlanCount").textContent = `${plan.length} ${plan.length === 1 ? "шаг" : plan.length >= 2 && plan.length <= 4 ? "шага" : "шагов"}`;
+
+  const planList = byId("taskPlanList");
+  planList.replaceChildren();
+  for (const step of plan) {
+    planList.append(textNode("li", "", String(step)));
+  }
+  if (!plan.length) {
+    planList.append(textNode("li", "task-plan-empty", "План ещё не сформирован"));
+  }
 
   const sourceList = byId("sourceList");
   sourceList.replaceChildren();
@@ -1501,6 +1627,7 @@ function renderSnapshot() {
   renderApprovals();
   renderMeetings();
   renderContextLibrary();
+  renderComposerSuggestions();
   renderRuntime();
   renderVoiceCapability();
   renderPilotMetrics();
@@ -1617,6 +1744,12 @@ function handleBackendEvent(event) {
       case "routing_blocked":
         setResponsePending(false);
         toast(String(event.message || "Передача контекста заблокирована политикой данных"));
+        break;
+      case "plan_updated":
+        byId("contextLibrary").open = true;
+        state.metric = "План задачи обновлён";
+        byId("metricsLabel").textContent = state.metric;
+        toast(String(event.result?.message || state.metric));
         break;
       case "source_fragment":
         openSourceFragment(event.source);
@@ -1799,6 +1932,7 @@ function sendText() {
   const input = byId("composerInput");
   const text = input.value.trim();
   if (!text) return;
+  hideComposerSuggestions();
   input.value = "";
   input.style.height = "auto";
   state.streamingText = "";
@@ -2068,14 +2202,36 @@ byId("stopButton").addEventListener("click", () => {
 });
 byId("micButton").addEventListener("click", () => void toggleVoiceSession());
 byId("composerInput").addEventListener("keydown", (event) => {
+  const suggestions = availableComposerSuggestions();
+  if (!event.isComposing && suggestions.length && ["ArrowDown", "ArrowUp"].includes(event.key)) {
+    event.preventDefault();
+    const delta = event.key === "ArrowDown" ? 1 : -1;
+    state.composerSuggestionIndex = (
+      state.composerSuggestionIndex + delta + suggestions.length
+    ) % suggestions.length;
+    renderComposerSuggestions();
+    return;
+  }
+  if (!event.isComposing && suggestions.length && ["Tab", "Enter"].includes(event.key) && !event.shiftKey) {
+    event.preventDefault();
+    applyComposerSuggestion(suggestions[state.composerSuggestionIndex]);
+    return;
+  }
+  if (event.key === "Escape" && suggestions.length) {
+    event.preventDefault();
+    hideComposerSuggestions();
+    return;
+  }
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     sendText();
   }
 });
 byId("composerInput").addEventListener("input", (event) => {
+  state.composerSuggestionIndex = 0;
   event.currentTarget.style.height = "auto";
   event.currentTarget.style.height = `${Math.min(96, event.currentTarget.scrollHeight)}px`;
+  renderComposerSuggestions();
 });
 byId("settingsForm").addEventListener("submit", connectModel);
 document.addEventListener("keydown", (event) => {
