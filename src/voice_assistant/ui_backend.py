@@ -2773,6 +2773,7 @@ class UIBackend:
         tts_error: str | None = None
         first_token_seconds: float | None = None
         first_audio_seconds: float | None = None
+        tts_rtf: float | None = None
         response_parts: list[str] = []
         response_incomplete = False
         is_attention = self._is_attention_query(turn.user_text)
@@ -2846,6 +2847,21 @@ class UIBackend:
             nonlocal spoken_text
             spoken_text = text.strip()
 
+        def capture_speech_metrics(metrics: dict[str, float]) -> None:
+            nonlocal tts_rtf
+            if response_started_at is None:
+                return
+            rtf = metrics.get("tts_rtf")
+            if rtf is None:
+                return
+            tts_rtf = rtf
+            self._record_pilot_metric(
+                "tts_rtf",
+                rtf,
+                measurement_scope="software",
+                route="local",
+            )
+
         def on_token(token: str) -> None:
             nonlocal first_token_seconds
             if token:
@@ -2884,6 +2900,7 @@ class UIBackend:
                 on_playback_end=lambda: on_phase("thinking"),
                 on_speech_error=on_speech_error,
                 on_speech_text=capture_spoken_text,
+                on_speech_metrics=capture_speech_metrics,
             )
 
         if is_attention:
@@ -3049,6 +3066,7 @@ class UIBackend:
                 if first_audio_seconds is not None
                 else {}
             ),
+            **({"tts_rtf": round(tts_rtf, 6)} if tts_rtf is not None else {}),
         }
         self.emitter.emit(
             "metric",

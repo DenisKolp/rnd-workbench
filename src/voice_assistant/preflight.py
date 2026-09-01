@@ -11,6 +11,7 @@ PILOT_SLO_METRICS = (
     "transcript_ready_seconds",
     "first_audio_seconds",
     "barge_in_stop_seconds",
+    "tts_rtf",
     "input_clipping_ratio",
     "output_clipping_ratio",
 )

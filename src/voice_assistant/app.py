@@ -75,6 +75,7 @@ class VoiceAssistant:
         on_playback_end: Callable[[], None] | None = None,
         on_speech_error: Callable[[BaseException], None] | None = None,
         on_speech_text: Callable[[str], None] | None = None,
+        on_speech_metrics: Callable[[dict[str, float]], None] | None = None,
     ) -> str:
         phrases: queue.Queue[str | None] = queue.Queue()
         audio_blocks: queue.Queue[object] = queue.Queue()
@@ -85,6 +86,11 @@ class VoiceAssistant:
         turn_cancel = cancel_event or threading.Event()
         speech_cancel = threading.Event()
         audio_cancel = _CombinedCancelEvent(turn_cancel, speech_cancel)
+        speech_metrics = {
+            "synthesis_seconds": 0.0,
+            "audio_seconds": 0.0,
+            "chunks": 0.0,
+        }
 
         def announce_speaking() -> None:
             if speaking_started.is_set():
@@ -107,13 +113,25 @@ class VoiceAssistant:
                         return
                     if audio_cancel.is_set():
                         return
-                    for block in self.tts.synthesize(
-                        phrase,
-                        cancel_event=audio_cancel,
-                    ):
-                        if audio_cancel.is_set():
-                            return
-                        audio_blocks.put(block)
+                    synthesis_started = time.perf_counter()
+                    try:
+                        for block in self.tts.synthesize(
+                            phrase,
+                            cancel_event=audio_cancel,
+                        ):
+                            if audio_cancel.is_set():
+                                return
+                            audio, sample_rate = block
+                            if sample_rate > 0:
+                                speech_metrics["audio_seconds"] += (
+                                    len(audio) / sample_rate
+                                )
+                            speech_metrics["chunks"] += 1
+                            audio_blocks.put(block)
+                    finally:
+                        speech_metrics["synthesis_seconds"] += (
+                            time.perf_counter() - synthesis_started
+                        )
             except BaseException as exc:
                 if not turn_cancel.is_set():
                     speech_errors.put(exc)
@@ -269,6 +287,30 @@ class VoiceAssistant:
 
         if on_speech_text is not None:
             on_speech_text(speech_excerpt.text if speak else "")
+
+        if (
+            on_speech_metrics is not None
+            and speak
+            and not turn_cancel.is_set()
+            and not speech_cancel.is_set()
+            and speech_metrics["audio_seconds"] > 0
+            and workers is not None
+            and not any(worker.is_alive() for worker in workers)
+        ):
+            try:
+                on_speech_metrics(
+                    {
+                        **speech_metrics,
+                        "tts_rtf": (
+                            speech_metrics["synthesis_seconds"]
+                            / speech_metrics["audio_seconds"]
+                        ),
+                    }
+                )
+            except Exception:
+                # Observability must never invalidate an otherwise complete
+                # text or voice response.
+                pass
 
         if (
             not turn_cancel.is_set()

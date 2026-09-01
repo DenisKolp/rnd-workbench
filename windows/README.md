@@ -1,7 +1,7 @@
 # RnD Workbench — Windows Electron pilot
 
 Версия Windows-компонента — **0.1.0-pilot**; она входит в общий продуктовый
-milestone **0.9.9**, но не обозначает готовую Windows-поставку.
+milestone **0.9.10**, но не обозначает готовую Windows-поставку.
 
 Это минимальная честная Windows-ветка для пилота на 30 сотрудниках. Клиент
 реализован **только на Electron**. Компактный голосовой виджет и полноразмерное
@@ -175,7 +175,8 @@ Faster-Whisper/CTranslate2/Tokenizers и проходит их runtime-import pr
 Source-контракт уже реализует `capability`, `state`, `metric`,
 `dictation_ready`, `assistant_delta`, `assistant_end`, `speech_error`, PCM audio
 events и `session_stopped`. Автотесты проверяют порядок и границы сообщений, а
-цифровая диагностика считает peak/clipping. CI уже собирает voice-ready portable
+цифровая диагностика считает peak/clipping и TTS RTF непосредственно из
+успешного голосового потока. CI уже собирает voice-ready portable
 artifact и запускает frozen dependency probe, но это ещё не аппаратная
 валидация: перед пилотом нужны измерения end-of-speech → transcript, first audio,
 speaker consistency, реального cancel → mute и barge-in на нескольких моделях

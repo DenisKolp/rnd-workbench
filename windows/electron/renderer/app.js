@@ -1130,10 +1130,12 @@ function renderPilotMetrics() {
   const transcript = metrics.transcript_ready_seconds;
   const firstAudio = metrics.first_audio_seconds;
   const listenReady = metrics.listen_ready_seconds;
+  const ttsRtf = metrics.tts_rtf;
   const clipping = metrics.output_clipping_ratio;
   if (listenReady) parts.push(`готовность p95 ${Number(listenReady.p95).toFixed(2)} с`);
   if (transcript) parts.push(`текст p50/p95 ${Number(transcript.p50).toFixed(2)}/${Number(transcript.p95).toFixed(2)} с`);
   if (firstAudio) parts.push(`звук p50/p95 ${Number(firstAudio.p50).toFixed(2)}/${Number(firstAudio.p95).toFixed(2)} с`);
+  if (ttsRtf) parts.push(`TTS RTF p95 ${Number(ttsRtf.p95).toFixed(2)}`);
   if (clipping) parts.push(`клиппинг ${(Number(clipping.max) * 100).toFixed(3)}%`);
   byId("pilotMetricsSummary").textContent = parts.length
     ? parts.join(" · ")

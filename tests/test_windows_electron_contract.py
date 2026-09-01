@@ -146,6 +146,8 @@ def test_pilot_voice_metrics_are_visible_and_exported_via_trusted_save_dialog() 
     assert 'ipcRenderer.invoke("pilot:export-metrics")' in preload
     assert 'sendCommand("export_pilot_metrics"' in renderer
     assert "state.snapshot.pilot_metrics" in renderer
+    assert "metrics.tts_rtf" in renderer
+    assert "TTS RTF p95" in renderer
     assert 'id="pilotMetricsSummary"' in html
     assert 'id="pilotUsageSummary"' in html
     assert 'id="pilotUsefulnessRating"' in html

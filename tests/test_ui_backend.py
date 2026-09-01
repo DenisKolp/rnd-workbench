@@ -1019,6 +1019,62 @@ def test_playback_end_returns_ui_and_barge_state_to_thinking(
     assert not speaking.is_set()
 
 
+def test_macos_voice_turn_persists_local_tts_rtf_without_speech_content(
+    capsys,
+    tmp_path,
+) -> None:
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    backend = UIBackend(Config.defaults(), EventEmitter(), store)
+
+    class MeasuredAssistant:
+        @staticmethod
+        def answer(
+            text,
+            *,
+            on_token,
+            on_phase,
+            on_speech_text,
+            on_speech_metrics,
+            **kwargs,
+        ):  # noqa: ANN001
+            del text, kwargs
+            on_phase("thinking")
+            on_token("Готово.")
+            on_phase("speaking")
+            on_speech_text("Готово.")
+            on_speech_metrics(
+                {
+                    "synthesis_seconds": 0.2,
+                    "audio_seconds": 1.0,
+                    "chunks": 1.0,
+                    "tts_rtf": 0.2,
+                }
+            )
+            return "Готово."
+
+    backend.assistant = MeasuredAssistant()
+    turn = backend._prepare_turn("Проверь голос", spoken=True)
+    capsys.readouterr()
+
+    backend._answer(
+        turn,
+        cancel_event=threading.Event(),
+        response_started_at=time.perf_counter(),
+    )
+
+    summary = store.pilot_metrics_summary(platform="macos")
+    metric = summary["metrics"]["tts_rtf"]
+    assert metric["count"] == 1
+    assert metric["p50"] == 0.2
+    assert store._rows(
+        "SELECT route FROM pilot_metrics WHERE metric='tts_rtf'"
+    ) == [{"route": "local"}]
+    assert "Проверь голос" not in json.dumps(summary, ensure_ascii=False)
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    answer = next(event for event in events if event["type"] == "assistant_end")
+    assert answer["performance"]["tts_rtf"] == 0.2
+
+
 def test_voice_answer_is_interrupted_and_next_utterance_is_captured(capsys, tmp_path) -> None:
     config = Config.defaults()
     config.audio.block_ms = 30

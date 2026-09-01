@@ -1128,6 +1128,9 @@ final class BackendController: ObservableObject {
            let p95 = statistic("first_audio_seconds", "p95") {
             parts.append(String(format: "звук p50/p95 %.2f/%.2f с", p50, p95))
         }
+        if let p95 = statistic("tts_rtf", "p95") {
+            parts.append(String(format: "TTS RTF p95 %.2f", p95))
+        }
         if let maximum = statistic("output_clipping_ratio", "max") {
             parts.append(String(format: "клиппинг %.3f%%", maximum * 100))
         }

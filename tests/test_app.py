@@ -69,6 +69,33 @@ def test_default_answer_uses_one_tts_request_for_stable_voice() -> None:
     assert phases == ["thinking", "speaking"]
 
 
+def test_successful_speech_reports_content_free_tts_rtf() -> None:
+    assistant = make_assistant()
+    metrics: list[dict[str, float]] = []
+
+    class ConsumingPlayer:
+        @staticmethod
+        def play(chunks, **kwargs):  # noqa: ANN001
+            if kwargs.get("on_start"):
+                kwargs["on_start"]()
+            list(chunks)
+
+    assistant.player = ConsumingPlayer()
+
+    assistant.answer(
+        "Проверка",
+        echo=False,
+        remember=False,
+        on_speech_metrics=metrics.append,
+    )
+
+    assert len(metrics) == 1
+    assert metrics[0]["audio_seconds"] == pytest.approx(0.01)
+    assert metrics[0]["chunks"] == 1
+    assert metrics[0]["synthesis_seconds"] >= 0
+    assert metrics[0]["tts_rtf"] >= 0
+
+
 def test_playback_ends_before_full_llm_after_default_excerpt_limit() -> None:
     assistant = make_assistant()
     playback_ended = threading.Event()

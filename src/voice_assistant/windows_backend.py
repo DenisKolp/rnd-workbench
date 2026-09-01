@@ -1930,19 +1930,20 @@ class WindowsPilotBackend:
         value: float,
         *,
         measurement_scope: str = "software",
+        route: str | None = None,
         outcome: str = "ok",
     ) -> None:
         try:
-            route = self._runtime().get("provider_type") or "unknown"
-            if route not in {"local", "corporate", "external"}:
-                route = "unknown"
+            selected_route = route or self._runtime().get("provider_type") or "unknown"
+            if selected_route not in {"local", "corporate", "external"}:
+                selected_route = "unknown"
             self.store.record_pilot_metric(
                 self._pilot_session_id,
                 "windows",
                 metric,
                 value,
                 measurement_scope=measurement_scope,
-                route=str(route),
+                route=str(selected_route),
                 outcome=outcome,
             )
         except Exception as exc:
@@ -2477,6 +2478,7 @@ class WindowsPilotBackend:
             "spoken_text": "",
             "tts_error": None,
             "first_audio_seconds": None,
+            "tts_rtf": None,
         }
 
         def start_speech(phrase: str) -> None:
@@ -2559,6 +2561,8 @@ class WindowsPilotBackend:
                     )
             if speech_result["first_audio_seconds"] is not None:
                 performance["first_audio_seconds"] = speech_result["first_audio_seconds"]
+            if speech_result["tts_rtf"] is not None:
+                performance["tts_rtf"] = speech_result["tts_rtf"]
             if voice_turn_started_at is not None:
                 performance["voice_total_seconds"] = round(
                     time.perf_counter() - voice_turn_started_at, 3
@@ -2703,12 +2707,17 @@ class WindowsPilotBackend:
     ) -> None:
         sequence = 0
         started = False
+        synthesis_started_at = time.perf_counter()
+        audio_seconds = 0.0
         try:
             for block, sample_rate in self._voice_runtime.synthesize(text, cancel_event):
                 if cancel_event.is_set():
                     break
                 if not block or len(block) % 2:
                     raise RuntimeError("TTS вернул некорректный PCM16-блок")
+                if sample_rate <= 0:
+                    raise RuntimeError("TTS вернул некорректную частоту PCM")
+                audio_seconds += (len(block) // 2) / sample_rate
                 if not started:
                     started = True
                     first_audio = round(time.perf_counter() - timing_origin, 3)
@@ -2735,6 +2744,19 @@ class WindowsPilotBackend:
                 return
             if not started:
                 raise RuntimeError("OmniVoice не вернул аудио")
+            if audio_seconds > 0:
+                tts_rtf = round(
+                    (time.perf_counter() - synthesis_started_at) / audio_seconds,
+                    6,
+                )
+                result["tts_rtf"] = tts_rtf
+                self._record_pilot_metric(
+                    "tts_rtf",
+                    tts_rtf,
+                    measurement_scope="software",
+                    route="local",
+                )
+                self.emitter.emit("metric", name="tts_rtf", ratio=tts_rtf)
             self.emitter.emit("audio_end", chunks=sequence)
             result["spoken"] = True
         except BaseException as exc:

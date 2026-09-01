@@ -998,6 +998,18 @@ def test_voice_jsonl_contract_runs_stt_llm_and_short_streaming_tts(tmp_path) -> 
     )
     assert answer["spoken"] is True
     assert answer["spoken_text"] == "Короткий голосовой ответ."
+    assert answer["performance"]["tts_rtf"] >= 0
+    tts_metric = next(
+        event
+        for event in emitter.events
+        if event["type"] == "metric" and event.get("name") == "tts_rtf"
+    )
+    assert tts_metric["ratio"] >= 0
+    tts_summary = backend.store.pilot_metrics_summary(platform="windows")["metrics"]
+    assert tts_summary["tts_rtf"]["count"] == 1
+    assert backend.store.pilot_metrics_summary(platform="windows")["route_counts"][
+        "local"
+    ] >= 1
 
 
 def test_voice_audio_contract_rejects_bad_sequence_and_base64(tmp_path) -> None:
