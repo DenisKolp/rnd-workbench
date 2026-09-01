@@ -309,6 +309,7 @@ class BargeInDetector:
 class Microphone(AbstractContextManager["Microphone"]):
     _threshold_cache: dict[str, float] = {}
     _threshold_cache_lock = threading.Lock()
+    _release_scheduler_slack_s = 0.060
 
     def __init__(self, config: AudioConfig) -> None:
         self.config = config
@@ -463,9 +464,15 @@ class Microphone(AbstractContextManager["Microphone"]):
         # The OS can deliver key-up in the middle of the input device's current
         # 30 ms block. Give that in-flight callback one block plus scheduler
         # slack to arrive; an immediate non-blocking drain clips final
-        # consonants on some devices. This bounded grace adds under 50 ms and
-        # never waits when cancellation discards the utterance.
-        tail_deadline = time.monotonic() + self.config.block_ms / 1000 + 0.015
+        # consonants on some devices. The default 30-ms input block therefore
+        # gets a bounded 90-ms tail window, which remains small compared with
+        # transcription latency but is resilient to a briefly delayed callback
+        # or scheduler under load. Cancellation still exits immediately.
+        tail_deadline = (
+            time.monotonic()
+            + self.config.block_ms / 1000
+            + self._release_scheduler_slack_s
+        )
         while len(blocks) < max_blocks:
             if cancel_event is not None and cancel_event.is_set():
                 return None
