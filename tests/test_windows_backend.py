@@ -799,8 +799,12 @@ def test_downloaded_express_transcript_imports_as_analyzed_meeting(tmp_path) -> 
     )
 
     deadline = time.monotonic() + 2
-    while time.monotonic() < deadline and not any(
-        event["type"] == "meeting_transcript_imported" for event in emitter.events
+    while time.monotonic() < deadline and not (
+        any(
+            event["type"] == "meeting_transcript_imported"
+            for event in emitter.events
+        )
+        and any(event["type"] == "snapshot" for event in emitter.events)
     ):
         time.sleep(0.005)
 
