@@ -42,6 +42,8 @@ PILOT_METRIC_UNITS = {
     "input_clipping_ratio": "ratio",
     "output_peak": "ratio",
     "output_clipping_ratio": "ratio",
+    "stt_clean_wer": "ratio",
+    "stt_corporate_wer": "ratio",
 }
 PILOT_METRIC_MAX_VALUES = {
     "input_peak": 4.0,
@@ -49,6 +51,8 @@ PILOT_METRIC_MAX_VALUES = {
     "input_clipping_ratio": 1.0,
     "output_clipping_ratio": 1.0,
     "tts_rtf": 100.0,
+    "stt_clean_wer": 10.0,
+    "stt_corporate_wer": 10.0,
 }
 PILOT_METRIC_SLOS: dict[str, dict[str, float]] = {
     "listen_ready_seconds": {"p95": 0.3},
@@ -58,6 +62,8 @@ PILOT_METRIC_SLOS: dict[str, dict[str, float]] = {
     "tts_rtf": {"p95": 0.45},
     "input_clipping_ratio": {"max": 0.0},
     "output_clipping_ratio": {"max": 0.0},
+    "stt_clean_wer": {"p95": 0.12},
+    "stt_corporate_wer": {"p95": 0.20},
 }
 PILOT_PLATFORMS = {"macos", "windows", "linux"}
 PILOT_MEASUREMENT_SCOPES = {"software", "device"}

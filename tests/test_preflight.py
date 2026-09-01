@@ -26,6 +26,8 @@ def _inputs(**overrides):  # noqa: ANN003, ANN201
                     "tts_rtf",
                     "input_clipping_ratio",
                     "output_clipping_ratio",
+                    "stt_clean_wer",
+                    "stt_corporate_wer",
                 )
             },
             "usage": {

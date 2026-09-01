@@ -51,6 +51,11 @@ from .preflight import PilotPreflightInputs, build_pilot_preflight
 from .onboarding import build_pilot_onboarding
 from .store import AssistantStore, new_id
 from .text import SentenceChunker, SpeechExcerptBuilder, normalize_for_omnivoice_speech
+from .voice_qualification import (
+    VOICE_QUALIFICATION_CASES,
+    VoiceQualificationCancelled,
+    run_voice_qualification,
+)
 
 
 WINDOWS_SYSTEM_PROMPT = """Ты — RnD Workbench, рабочий ИИ-ассистент для исследовательской, проектной и корпоративной работы.
@@ -883,6 +888,8 @@ class WindowsPilotBackend:
         self._meeting_import_worker: threading.Thread | None = None
         self._meeting_import_cancel_event = threading.Event()
         self._voice_loader: threading.Thread | None = None
+        self._voice_qualification_worker: threading.Thread | None = None
+        self._voice_qualification_cancel_event = threading.Event()
         self._restore_chat()
 
     def load(self) -> None:
@@ -987,6 +994,10 @@ class WindowsPilotBackend:
             )
         elif name == "pilot_preflight":
             self.run_pilot_preflight()
+        elif name == "voice_qualification":
+            self.start_voice_qualification()
+        elif name == "voice_qualification_cancel":
+            self.cancel_voice_qualification()
         elif name == "set_pilot_feedback":
             self.set_pilot_feedback(command)
         elif name == "sync_express_meetings":
@@ -1086,6 +1097,7 @@ class WindowsPilotBackend:
             self.emitter.emit("pong")
         elif name == "quit":
             self.shutdown_event.set()
+            self.cancel_voice_qualification()
             self._voice_session_active = False
             self._meeting_import_cancel_event.set()
             self.cancel_turn()
@@ -1872,6 +1884,141 @@ class WindowsPilotBackend:
         result = self._build_pilot_preflight(refresh_storage=True)
         self.emitter.emit("pilot_preflight", result=result)
         self.emit_snapshot()
+
+    @staticmethod
+    def _resample_pcm16(audio: bytes, source_rate: int, target_rate: int) -> bytes:
+        if source_rate <= 0 or target_rate <= 0 or len(audio) % 2:
+            raise ValueError("Некорректный PCM16 для локальной проверки")
+        if source_rate == target_rate:
+            return audio
+        source = np.frombuffer(audio, dtype="<i2").astype(np.float32)
+        if source.size == 0:
+            return b""
+        target_size = max(1, round(source.size * target_rate / source_rate))
+        source_positions = np.arange(source.size, dtype=np.float64) / source_rate
+        target_positions = np.arange(target_size, dtype=np.float64) / target_rate
+        resampled = np.interp(target_positions, source_positions, source)
+        return np.clip(np.rint(resampled), -32768, 32767).astype("<i2").tobytes()
+
+    def start_voice_qualification(self) -> None:
+        diagnostics = self._voice_runtime.diagnostics()
+        stt_ready = bool(diagnostics.get("stt", {}).get("ready"))
+        tts_ready = bool(diagnostics.get("tts", {}).get("ready"))
+        dictation_busy = bool(
+            self._dictation_worker is not None and self._dictation_worker.is_alive()
+        )
+        if not stt_ready or not tts_ready:
+            self.emitter.emit(
+                "voice_qualification_error",
+                code="LOCAL_VOICE_NOT_READY",
+                retryable=True,
+                content_transmitted=False,
+            )
+            return
+        if self._busy() or self._voice_session_active or dictation_busy:
+            self.emitter.emit(
+                "voice_qualification_error",
+                code="APP_BUSY",
+                retryable=True,
+                content_transmitted=False,
+            )
+            return
+        self._voice_qualification_cancel_event.clear()
+        worker = threading.Thread(
+            target=self._run_voice_qualification,
+            name="windows-voice-qualification",
+            daemon=True,
+        )
+        with self._lock:
+            self._voice_qualification_worker = worker
+        self.emitter.emit(
+            "voice_qualification_started",
+            mode="local_digital_loopback",
+            sample_count=len(VOICE_QUALIFICATION_CASES),
+            acoustic_hardware_measured=False,
+            content_transmitted=False,
+        )
+        worker.start()
+
+    def cancel_voice_qualification(self) -> None:
+        self._voice_qualification_cancel_event.set()
+        worker = self._voice_qualification_worker
+        if worker is not None and worker.is_alive():
+            self._voice_runtime.cancel()
+
+    def _run_voice_qualification(self) -> None:
+        cancel_event = self._voice_qualification_cancel_event
+
+        def transcribe_case(text: str) -> str:
+            blocks: list[bytes] = []
+            sample_rate: int | None = None
+            for block, block_rate in self._voice_runtime.synthesize(text, cancel_event):
+                if cancel_event.is_set():
+                    raise VoiceQualificationCancelled("Проверка распознавания отменена")
+                current_rate = int(block_rate)
+                if sample_rate is None:
+                    sample_rate = current_rate
+                elif sample_rate != current_rate:
+                    raise RuntimeError("TTS_SAMPLE_RATE_CHANGED")
+                if block:
+                    blocks.append(bytes(block))
+            if not blocks or sample_rate is None:
+                raise RuntimeError("TTS_EMPTY_AUDIO")
+            pcm16 = self._resample_pcm16(
+                b"".join(blocks), sample_rate, self._VOICE_SAMPLE_RATE
+            )
+            return self._voice_runtime.transcribe_pcm16(
+                pcm16,
+                self._VOICE_SAMPLE_RATE,
+                cancel_event,
+            )
+
+        def record_metric(metric: str, value: float) -> None:
+            self.store.record_pilot_metric(
+                self._pilot_session_id,
+                "windows",
+                metric,
+                value,
+                measurement_scope="software",
+                route="local",
+            )
+
+        def emit_progress(completed: int, total: int, category: str) -> None:
+            self.emitter.emit(
+                "voice_qualification_progress",
+                completed=completed,
+                total=total,
+                category=category,
+                content_transmitted=False,
+            )
+
+        try:
+            result = run_voice_qualification(
+                transcribe_case,
+                record_metric,
+                cancelled=cancel_event.is_set,
+                progress=emit_progress,
+            )
+            self.emitter.emit("voice_qualification_completed", result=result)
+            self.emit_snapshot()
+        except VoiceQualificationCancelled:
+            self.emitter.emit(
+                "voice_qualification_cancelled",
+                content_transmitted=False,
+            )
+            self.emit_snapshot()
+        except Exception as exc:
+            self.emitter.emit(
+                "voice_qualification_error",
+                code="LOCAL_LOOPBACK_FAILED",
+                error_type=type(exc).__name__,
+                retryable=True,
+                content_transmitted=False,
+            )
+            self.emit_snapshot()
+        finally:
+            with self._lock:
+                self._voice_qualification_worker = None
 
     def set_pilot_feedback(self, command: dict[str, Any]) -> None:
         rating = command.get("usefulness_rating")
@@ -3128,6 +3275,10 @@ class WindowsPilotBackend:
         with self._lock:
             return bool(
                 (self._worker is not None and self._worker.is_alive())
+                or (
+                    self._voice_qualification_worker is not None
+                    and self._voice_qualification_worker.is_alive()
+                )
                 or (
                     self._meeting_import_worker is not None
                     and self._meeting_import_worker.is_alive()

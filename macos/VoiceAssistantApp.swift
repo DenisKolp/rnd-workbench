@@ -1001,6 +1001,8 @@ final class BackendController: ObservableObject {
     @Published private(set) var pilotMetrics: [String: Any] = [:]
     @Published private(set) var pilotPreflightOverall = "limited"
     @Published private(set) var pilotPreflightChecks: [PilotPreflightCheckRecord] = []
+    @Published private(set) var voiceQualificationRunning = false
+    @Published private(set) var voiceQualificationProgress = ""
     @Published private(set) var pilotOnboardingStatus = "active"
     @Published private(set) var pilotOnboardingTitle = "Быстрый старт"
     @Published private(set) var pilotOnboardingDetail = "Определяю следующий полезный шаг."
@@ -1130,6 +1132,12 @@ final class BackendController: ObservableObject {
         }
         if let p95 = statistic("tts_rtf", "p95") {
             parts.append(String(format: "TTS RTF p95 %.2f", p95))
+        }
+        if let p95 = statistic("stt_clean_wer", "p95") {
+            parts.append(String(format: "WER обычная %.1f%%", p95 * 100))
+        }
+        if let p95 = statistic("stt_corporate_wer", "p95") {
+            parts.append(String(format: "WER корпоративная %.1f%%", p95 * 100))
         }
         if let maximum = statistic("output_clipping_ratio", "max") {
             parts.append(String(format: "клиппинг %.3f%%", maximum * 100))
@@ -2250,6 +2258,14 @@ final class BackendController: ObservableObject {
         send(["command": "pilot_preflight"])
     }
 
+    func toggleVoiceQualification() {
+        send([
+            "command": voiceQualificationRunning
+                ? "voice_qualification_cancel"
+                : "voice_qualification",
+        ])
+    }
+
     func performPilotOnboardingAction() {
         switch pilotOnboardingActionID {
         case "review_preflight":
@@ -2585,6 +2601,25 @@ final class BackendController: ObservableObject {
             if let report = event["result"] as? [String: Any] {
                 applyPilotPreflight(report)
             }
+        case "voice_qualification_started":
+            voiceQualificationRunning = true
+            voiceQualificationProgress = "0 из \(int(event["sample_count"]))"
+            statusText = "Проверяю локальное распознавание…"
+        case "voice_qualification_progress":
+            voiceQualificationRunning = true
+            voiceQualificationProgress = "\(int(event["completed"])) из \(int(event["total"]))"
+        case "voice_qualification_completed":
+            voiceQualificationRunning = false
+            voiceQualificationProgress = "Готово"
+            statusText = "Проверка распознавания завершена"
+        case "voice_qualification_cancelled":
+            voiceQualificationRunning = false
+            voiceQualificationProgress = "Отменено"
+            statusText = "Проверка распознавания отменена"
+        case "voice_qualification_error":
+            voiceQualificationRunning = false
+            voiceQualificationProgress = "Не выполнено"
+            errorMessage = "Не удалось выполнить локальную проверку распознавания"
         case "task_context":
             activeSources = rows(event, "sources").map(sourceRecord)
         case "routing_fallback":
@@ -5724,6 +5759,22 @@ struct SettingsView: View {
                 Button("Проверить снова") {
                     controller.runPilotPreflight()
                 }
+                Button(
+                    controller.voiceQualificationRunning
+                        ? "Остановить проверку"
+                        : "Проверить распознавание"
+                ) {
+                    controller.toggleVoiceQualification()
+                }
+                if !controller.voiceQualificationProgress.isEmpty {
+                    LabeledContent(
+                        "Локальный TTS → STT",
+                        value: controller.voiceQualificationProgress
+                    )
+                }
+                Text("Цифровая проверка модели и корпоративной лексики без микрофона. Аудио и текст не сохраняются.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 DisclosureGroup("Подробности проверки", isExpanded: $preflightDetailsExpanded) {
                     ForEach(controller.pilotPreflightChecks) { check in
                         HStack(alignment: .top, spacing: 10) {

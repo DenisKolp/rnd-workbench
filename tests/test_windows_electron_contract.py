@@ -167,6 +167,34 @@ def test_dynamic_pilot_preflight_is_rendered_and_can_be_refreshed() -> None:
     assert 'id="pilotPreflightList"' in html
 
 
+def test_windows_full_diagnostics_expose_content_free_voice_qualification() -> None:
+    html = HTML.read_text(encoding="utf-8")
+    renderer = RENDERER.read_text(encoding="utf-8")
+
+    assert 'id="voiceQualificationButton"' in html
+    assert "Аудио и текст не сохраняются" in html
+    assert 'case "voice_qualification_progress":' in renderer
+    assert '"voice_qualification_cancel"' in renderer
+    assert '"voice_qualification"' in renderer
+
+
+def test_windows_button_labels_wrap_instead_of_clipping() -> None:
+    styles = (ROOT / "windows" / "electron" / "renderer" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    shared_buttons = re.search(
+        r"\.send-button, \.secondary-button \{([^}]+)\}", styles
+    )
+    assert shared_buttons is not None
+    declarations = shared_buttons.group(1)
+    assert "min-width: 0" in declarations
+    assert "height: auto" in declarations
+    assert "white-space: normal" in declarations
+    assert "overflow-wrap: anywhere" in declarations
+    assert ".mode-button" in styles and "white-space: nowrap" in styles
+
+
 def test_content_free_onboarding_routes_to_existing_windows_flows() -> None:
     renderer = RENDERER.read_text(encoding="utf-8")
     html = HTML.read_text(encoding="utf-8")

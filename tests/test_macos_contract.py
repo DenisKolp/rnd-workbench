@@ -151,6 +151,17 @@ def test_macos_settings_expose_dynamic_content_free_pilot_preflight() -> None:
     assert 'send(["command": "pilot_preflight"])' in source
 
 
+def test_macos_full_diagnostics_expose_content_free_voice_qualification() -> None:
+    source = SWIFT_SOURCE.read_text(encoding="utf-8")
+
+    assert '"voice_qualification"' in source
+    assert '"voice_qualification_cancel"' in source
+    assert 'case "voice_qualification_progress":' in source
+    assert 'Button(\n                    controller.voiceQualificationRunning' in source
+    assert '? "Остановить проверку"' in source
+    assert "Аудио и текст не сохраняются" in source
+
+
 def test_macos_content_free_onboarding_routes_to_existing_product_flows() -> None:
     source = SWIFT_SOURCE.read_text(encoding="utf-8")
 
@@ -428,7 +439,7 @@ def test_macos_build_links_global_input_frameworks_and_advances_build_number() -
     assert "--compress=zip-6" in build
     assert "verify_java_core_bridge.py" in build
     assert "--external-models-enabled" in build
-    assert "<string>18</string>" in plist
+    assert "<string>19</string>" in plist
 
 
 def test_macos_app_launches_bundled_java_policy_and_shows_safe_fallback() -> None:

@@ -17,6 +17,7 @@ const state = {
   toastTimer: null,
   meetingImporting: false,
   meetingImportKind: "",
+  voiceQualificationRunning: false,
   javaFallbackNotified: false,
   ptt: {
     sttAvailable: false,
@@ -1132,10 +1133,14 @@ function renderPilotMetrics() {
   const listenReady = metrics.listen_ready_seconds;
   const ttsRtf = metrics.tts_rtf;
   const clipping = metrics.output_clipping_ratio;
+  const cleanWer = metrics.stt_clean_wer;
+  const corporateWer = metrics.stt_corporate_wer;
   if (listenReady) parts.push(`готовность p95 ${Number(listenReady.p95).toFixed(2)} с`);
   if (transcript) parts.push(`текст p50/p95 ${Number(transcript.p50).toFixed(2)}/${Number(transcript.p95).toFixed(2)} с`);
   if (firstAudio) parts.push(`звук p50/p95 ${Number(firstAudio.p50).toFixed(2)}/${Number(firstAudio.p95).toFixed(2)} с`);
   if (ttsRtf) parts.push(`TTS RTF p95 ${Number(ttsRtf.p95).toFixed(2)}`);
+  if (cleanWer) parts.push(`WER обычная ${(Number(cleanWer.p95) * 100).toFixed(1)}%`);
+  if (corporateWer) parts.push(`WER корпоративная ${(Number(corporateWer.p95) * 100).toFixed(1)}%`);
   if (clipping) parts.push(`клиппинг ${(Number(clipping.max) * 100).toFixed(3)}%`);
   byId("pilotMetricsSummary").textContent = parts.length
     ? parts.join(" · ")
@@ -1491,6 +1496,32 @@ function handleBackendEvent(event) {
           renderPilotPreflight();
         }
         break;
+      case "voice_qualification_started":
+        state.voiceQualificationRunning = true;
+        byId("voiceQualificationButton").textContent = "Остановить проверку";
+        byId("voiceQualificationStatus").textContent = `Проверено 0 из ${Number(event.sample_count || 10)}`;
+        break;
+      case "voice_qualification_progress":
+        state.voiceQualificationRunning = true;
+        byId("voiceQualificationStatus").textContent = `Проверено ${Number(event.completed || 0)} из ${Number(event.total || 10)}`;
+        break;
+      case "voice_qualification_completed":
+        state.voiceQualificationRunning = false;
+        byId("voiceQualificationButton").textContent = "Проверить распознавание";
+        byId("voiceQualificationStatus").textContent = "Проверка завершена. Аудио и текст не сохранены.";
+        toast("Локальная проверка распознавания завершена");
+        break;
+      case "voice_qualification_cancelled":
+        state.voiceQualificationRunning = false;
+        byId("voiceQualificationButton").textContent = "Проверить распознавание";
+        byId("voiceQualificationStatus").textContent = "Проверка отменена. Сохранены только уже измеренные числовые значения.";
+        break;
+      case "voice_qualification_error":
+        state.voiceQualificationRunning = false;
+        byId("voiceQualificationButton").textContent = "Проверить распознавание";
+        byId("voiceQualificationStatus").textContent = "Проверка не выполнена. Убедитесь, что локальные STT и TTS готовы.";
+        toast("Не удалось выполнить локальную проверку распознавания");
+        break;
       case "capability_unavailable":
         if (event.capability === "push_to_talk") {
           state.ptt.sttAvailable = false;
@@ -1779,6 +1810,11 @@ byId("deleteMeetingButton").addEventListener("click", () => {
 });
 byId("exportPilotMetricsButton").addEventListener("click", () => void exportPilotMetrics());
 byId("pilotPreflightButton").addEventListener("click", () => sendCommand("pilot_preflight"));
+byId("voiceQualificationButton").addEventListener("click", () => {
+  sendCommand(state.voiceQualificationRunning
+    ? "voice_qualification_cancel"
+    : "voice_qualification");
+});
 byId("pilotOnboardingButton").addEventListener("click", performPilotOnboardingAction);
 byId("pilotUsefulnessRating").addEventListener("change", (event) => {
   const rating = Number(event.currentTarget.value);

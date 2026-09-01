@@ -1226,6 +1226,53 @@ def test_windows_pilot_preflight_is_dynamic_content_free_and_honest(tmp_path) ->
     )
 
 
+def test_windows_voice_qualification_resamples_and_records_content_free_wer(
+    tmp_path,
+) -> None:
+    class EchoVoiceRuntime(FakeVoiceRuntime):
+        expected = ""
+
+        def synthesize(self, text, cancel_event):  # noqa: ANN001, ANN201
+            assert not cancel_event.is_set()
+            self.expected = text
+            yield b"\x00\x00" * 2_400, 24_000
+
+        def transcribe_pcm16(
+            self, audio, sample_rate, cancel_event  # noqa: ANN001
+        ):  # noqa: ANN201
+            assert not cancel_event.is_set()
+            assert sample_rate == 16_000
+            assert len(audio) == 3_200
+            return self.expected
+
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        voice_runtime=EchoVoiceRuntime(),
+    )
+
+    backend.handle({"command": "voice_qualification"})
+    assert backend._voice_qualification_worker is not None
+    backend._voice_qualification_worker.join(timeout=5)
+
+    completed = next(
+        event
+        for event in emitter.events
+        if event["type"] == "voice_qualification_completed"
+    )
+    summary = backend.store.pilot_metrics_summary(platform="windows")
+    database = (tmp_path / "assistant.sqlite3").read_bytes()
+    serialized_events = json.dumps(emitter.events, ensure_ascii=False)
+
+    assert completed["result"]["content_transmitted"] is False
+    assert summary["metrics"]["stt_clean_wer"]["count"] == 5
+    assert summary["metrics"]["stt_corporate_wer"]["count"] == 5
+    assert summary["metrics"]["stt_corporate_wer"]["slo"]["status"] == "pass"
+    assert "Собери транскрипцию встречи" not in serialized_events
+    assert "Собери транскрипцию встречи".encode() not in database
+
+
 def test_windows_backend_marks_pilot_session_clean_only_on_quit(tmp_path) -> None:
     emitter = CapturingEmitter()
     backend = WindowsPilotBackend(

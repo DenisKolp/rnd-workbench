@@ -222,6 +222,60 @@ def test_macos_pilot_preflight_uses_loaded_runtime_without_work_content(
     assert snapshot["pilot_onboarding"]["content_transmitted"] is False
 
 
+def test_macos_voice_qualification_records_only_local_content_free_wer(
+    capsys,
+    tmp_path,
+) -> None:
+    backend = UIBackend(
+        Config.defaults(),
+        EventEmitter(),
+        AssistantStore(tmp_path / "assistant.sqlite3"),
+        core_policy=FakeCorePolicy(),
+    )
+
+    class EchoSTT:
+        model = object()
+        expected = ""
+
+        def transcribe(self, audio, sample_rate):  # noqa: ANN001, ANN201
+            assert audio.size > 0
+            assert sample_rate == 24_000
+            return self.expected
+
+    class EchoTTS:
+        model = object()
+
+        def __init__(self, stt) -> None:  # noqa: ANN001
+            self.stt = stt
+
+        def synthesize(self, text, cancel_event):  # noqa: ANN001, ANN201
+            assert not cancel_event.is_set()
+            self.stt.expected = text
+            yield np.zeros(480, dtype=np.float32), 24_000
+
+    stt = EchoSTT()
+    backend.assistant.stt = stt
+    backend.assistant.tts = EchoTTS(stt)
+
+    backend.handle({"command": "voice_qualification"})
+    assert backend.voice_qualification_thread is not None
+    backend.voice_qualification_thread.join(timeout=5)
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    completed = next(
+        event for event in events if event["type"] == "voice_qualification_completed"
+    )
+    summary = backend.store.pilot_metrics_summary(platform="macos")
+    database = (tmp_path / "assistant.sqlite3").read_bytes()
+
+    assert completed["result"]["content_transmitted"] is False
+    assert summary["metrics"]["stt_clean_wer"]["count"] == 5
+    assert summary["metrics"]["stt_corporate_wer"]["count"] == 5
+    assert summary["metrics"]["stt_clean_wer"]["slo"]["status"] == "pass"
+    assert "Собери транскрипцию встречи" not in json.dumps(events, ensure_ascii=False)
+    assert "Собери транскрипцию встречи".encode() not in database
+
+
 def test_macos_backend_marks_pilot_session_clean_only_on_quit(capsys, tmp_path) -> None:
     store = AssistantStore(tmp_path / "assistant.sqlite3")
     backend = UIBackend(

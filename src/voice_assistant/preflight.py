@@ -14,6 +14,8 @@ PILOT_SLO_METRICS = (
     "tts_rtf",
     "input_clipping_ratio",
     "output_clipping_ratio",
+    "stt_clean_wer",
+    "stt_corporate_wer",
 )
 PILOT_RELIABILITY_MIN_SESSIONS = 20
 
@@ -83,7 +85,10 @@ def _voice_slo_check(summary: Mapping[str, Any] | None) -> dict[str, str]:
         "Качество голосового контура",
         "unverified",
         f"Подтверждено метрик: {passed} из {len(PILOT_SLO_METRICS)}.",
-        "Выполните минимум пять реплик, включая перебивание, на реальном устройстве.",
+        (
+            "Выполните минимум пять реплик, включая перебивание, на реальном "
+            "устройстве и запустите локальную проверку распознавания."
+        ),
     )
 
 

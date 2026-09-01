@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Any
 
+import numpy as np
+
 from .attention import AttentionEngine, render_attention
 from .app import VoiceAssistant
 from .audio import (
@@ -43,6 +45,11 @@ from .store import AssistantStore, new_id
 from .synapse import SynapseImportInProgressError, SynapseRepairRequiredError
 from .text import concise_speech_text
 from .voice_quality import analyze_audio
+from .voice_qualification import (
+    VOICE_QUALIFICATION_CASES,
+    VoiceQualificationCancelled,
+    run_voice_qualification,
+)
 
 
 @dataclass(frozen=True)
@@ -141,6 +148,8 @@ class UIBackend:
         self.text_thread: threading.Thread | None = None
         self.audio_import_thread: threading.Thread | None = None
         self.express_sync_thread: threading.Thread | None = None
+        self.voice_qualification_thread: threading.Thread | None = None
+        self.voice_qualification_cancel_event = threading.Event()
         self.task_lock = threading.Lock()
         self._turn_lock = threading.Lock()
         self._current_turn_cancel: threading.Event | None = None
@@ -242,6 +251,10 @@ class UIBackend:
             self.export_pilot_metrics(command)
         elif name == "pilot_preflight":
             self.run_pilot_preflight()
+        elif name == "voice_qualification":
+            self.start_voice_qualification()
+        elif name == "voice_qualification_cancel":
+            self.cancel_voice_qualification()
         elif name == "set_pilot_feedback":
             self.set_pilot_feedback(command)
         elif name == "sync_express_meetings":
@@ -689,6 +702,7 @@ class UIBackend:
             self.emitter.emit("pong")
         elif name == "quit":
             self.shutdown_event.set()
+            self.cancel_voice_qualification()
             self.cancel_dictation()
             self.stop_session()
             self._core_policy.close()
@@ -1652,6 +1666,139 @@ class UIBackend:
         result = self._build_pilot_preflight(refresh_storage=True)
         self.emitter.emit("pilot_preflight", result=result)
         self.emit_snapshot()
+
+    def start_voice_qualification(self) -> None:
+        if any(
+            worker is not None and worker.is_alive()
+            for worker in (self.audio_import_thread, self.express_sync_thread)
+        ):
+            self.emitter.emit(
+                "voice_qualification_error",
+                code="APP_BUSY",
+                retryable=True,
+                content_transmitted=False,
+            )
+            return
+        if self.session_thread is not None and self.session_thread.is_alive():
+            self.emitter.emit(
+                "voice_qualification_error",
+                code="VOICE_SESSION_ACTIVE",
+                retryable=True,
+                content_transmitted=False,
+            )
+            return
+        if self.dictation_thread is not None and self.dictation_thread.is_alive():
+            self.emitter.emit(
+                "voice_qualification_error",
+                code="DICTATION_ACTIVE",
+                retryable=True,
+                content_transmitted=False,
+            )
+            return
+        if not self.task_lock.acquire(blocking=False):
+            self.emitter.emit(
+                "voice_qualification_error",
+                code="APP_BUSY",
+                retryable=True,
+                content_transmitted=False,
+            )
+            return
+        stt = getattr(self.assistant, "stt", None)
+        if getattr(stt, "model", None) is None or not self._tts_ready_for_preflight():
+            self.task_lock.release()
+            self.emitter.emit(
+                "voice_qualification_error",
+                code="LOCAL_VOICE_NOT_READY",
+                retryable=True,
+                content_transmitted=False,
+            )
+            return
+        self.voice_qualification_cancel_event.clear()
+        worker = threading.Thread(
+            target=self._run_voice_qualification,
+            name="voice-qualification",
+            daemon=True,
+        )
+        self.voice_qualification_thread = worker
+        self.emitter.emit(
+            "voice_qualification_started",
+            mode="local_digital_loopback",
+            sample_count=len(VOICE_QUALIFICATION_CASES),
+            acoustic_hardware_measured=False,
+            content_transmitted=False,
+        )
+        worker.start()
+
+    def cancel_voice_qualification(self) -> None:
+        self.voice_qualification_cancel_event.set()
+
+    def _run_voice_qualification(self) -> None:
+        cancel_event = self.voice_qualification_cancel_event
+
+        def transcribe_case(text: str) -> str:
+            blocks: list[np.ndarray] = []
+            sample_rate: int | None = None
+            for block, block_rate in self.assistant.tts.synthesize(text, cancel_event):
+                if cancel_event.is_set():
+                    raise VoiceQualificationCancelled("Проверка распознавания отменена")
+                current_rate = int(block_rate)
+                if sample_rate is None:
+                    sample_rate = current_rate
+                elif sample_rate != current_rate:
+                    raise RuntimeError("TTS_SAMPLE_RATE_CHANGED")
+                samples = np.asarray(block, dtype=np.float32).reshape(-1)
+                if samples.size:
+                    blocks.append(samples)
+            if not blocks or sample_rate is None:
+                raise RuntimeError("TTS_EMPTY_AUDIO")
+            return self.assistant.stt.transcribe(np.concatenate(blocks), sample_rate)
+
+        def record_metric(metric: str, value: float) -> None:
+            self.store.record_pilot_metric(
+                self._pilot_session_id,
+                "macos",
+                metric,
+                value,
+                measurement_scope="software",
+                route="local",
+            )
+
+        def emit_progress(completed: int, total: int, category: str) -> None:
+            self.emitter.emit(
+                "voice_qualification_progress",
+                completed=completed,
+                total=total,
+                category=category,
+                content_transmitted=False,
+            )
+
+        try:
+            result = run_voice_qualification(
+                transcribe_case,
+                record_metric,
+                cancelled=cancel_event.is_set,
+                progress=emit_progress,
+            )
+            self.emitter.emit("voice_qualification_completed", result=result)
+            self.emit_snapshot()
+        except VoiceQualificationCancelled:
+            self.emitter.emit(
+                "voice_qualification_cancelled",
+                content_transmitted=False,
+            )
+            self.emit_snapshot()
+        except Exception as exc:
+            self.emitter.emit(
+                "voice_qualification_error",
+                code="LOCAL_LOOPBACK_FAILED",
+                error_type=type(exc).__name__,
+                retryable=True,
+                content_transmitted=False,
+            )
+            self.emit_snapshot()
+        finally:
+            self.voice_qualification_thread = None
+            self.task_lock.release()
 
     def set_pilot_feedback(self, command: dict[str, Any]) -> None:
         rating = command.get("usefulness_rating")
