@@ -283,7 +283,7 @@ def test_full_window_wraps_long_task_titles_and_preserves_route_label() -> None:
     assert "overflow-wrap: anywhere" in styles
     assert "white-space: normal" in styles
     assert 'body[data-mode="full"] .brand-copy span { max-width: 300px; font-size: 10px; }' in styles
-    assert '.compact-switch button { min-width: 88px; min-height: 32px;' in styles
+    assert '.compact-switch button { min-width: 88px; min-height: 36px;' in styles
     assert '.mode-button { min-width: 0; min-height: 32px;' in styles
 
 
@@ -303,8 +303,8 @@ def test_full_window_uses_vertical_tool_panel_and_collapses_diagnostics() -> Non
     assert 'body[data-mode="full"] .full-only { display: block !important; }' in styles
     assert 'body[data-mode="full"] .pilot-panel { display: block !important; }' in styles
     assert 'body[data-mode="full"] .chat-heading { display: flex !important; }' in styles
-    assert '.pilot-diagnostics > summary { display: flex; min-height: 32px;' in styles
-    assert '.pilot-usage-details summary { display: flex; min-height: 30px;' in styles
+    assert '.pilot-diagnostics > summary { display: flex; min-height: 36px;' in styles
+    assert '.pilot-usage-details summary { display: flex; min-height: 34px;' in styles
     assert "if (approvals.length > previousCount) card.open = true" in renderer
     assert "if (!approvals.length) card.open = false" in renderer
 
@@ -330,7 +330,7 @@ def test_windows_digest_automations_are_collapsed_editable_and_text_safe() -> No
     assert "row.append(heading, actions)" in renderer
     assert "innerHTML" not in renderer
     assert '.automation-form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));' in styles
-    assert '.automation-row-actions button { min-width: 0; min-height: 30px;' in styles
+    assert '.automation-row-actions button { min-width: 0; min-height: 34px;' in styles
     assert "white-space: normal" in styles
     assert ".mode-button { min-width: 0; min-height: 32px;" in styles
     assert "overflow-wrap: anywhere" in styles
@@ -549,7 +549,7 @@ def test_windows_source_and_artifact_controls_are_collapsed_and_fragment_aware()
     assert "decodedMetadata(message.metadata)" in renderer
     assert "metadata.sources" in renderer
     assert "char_start" in renderer and "char_end" in renderer
-    assert ".context-library > summary { display: flex; min-height: 32px;" in styles
+    assert ".context-library > summary { display: flex; min-height: 36px;" in styles
     assert ".source-chip" in styles and "overflow-wrap: anywhere" in styles
     compact_section = html.split('<nav class="compact-switch compact-only"', maxsplit=1)[1].split(
         '<section class="chat-card"', maxsplit=1

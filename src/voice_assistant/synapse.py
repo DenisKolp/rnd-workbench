@@ -44,6 +44,10 @@ MAX_SUPPORTING_ATTACHMENTS = 8
 _QUICK_TEXT_SUFFIXES = frozenset(
     {".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".log", ".xml"}
 )
+_QUICK_TRANSCRIPT_SUFFIXES = _QUICK_TEXT_SUFFIXES | frozenset({".docx"})
+_DOCX_MEDIA_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
 _QUICK_TRANSCRIPT_MARKERS = (
     "transcript",
     "transcription",
@@ -552,12 +556,15 @@ class SynapseMeetingPackageImporter:
         managed_paths: list[Path] = []
         try:
             transcript_part = manifest.transcript()
-            transcript_text = _decode_utf8(transcript_part, "транскрипт")
             managed_transcript = self._write_managed(
                 transcript_part,
                 package_fingerprint=manifest.fingerprint,
             )
             managed_paths.append(managed_transcript)
+            transcript_text = self._extract_transcript_text(
+                transcript_part,
+                managed_transcript,
+            )
             primary = self.store.add_source(
                 workspace_id,
                 "meeting",
@@ -721,6 +728,22 @@ class SynapseMeetingPackageImporter:
                     # A failed cleanup must not hide the original import error.
                     pass
             raise
+
+    def _extract_transcript_text(self, part: PackagePart, path: Path) -> str:
+        suffix = PurePosixPath(part.relative_path).suffix.casefold()
+        if suffix in _QUICK_TEXT_SUFFIXES and part.media_type.startswith("text/"):
+            return _decode_utf8(part, "транскрипт")
+        if suffix == ".docx" and part.media_type == _DOCX_MEDIA_TYPE:
+            try:
+                extracted = self.text_extractor(path).strip()
+            except (OSError, ValueError, UnicodeError) as error:
+                raise ValueError(
+                    "Не удалось безопасно извлечь текст стенограммы DOCX"
+                ) from error
+            if not extracted:
+                raise ValueError("Стенограмма DOCX не содержит текста")
+            return extracted
+        raise ValueError("Транскрипт должен быть UTF-8 text/markdown или DOCX")
 
     def _renew_claim(
         self,
@@ -1168,7 +1191,7 @@ def _quick_layout_manifest(
     transcript_candidates = [
         entry
         for entry in visible
-        if PurePosixPath(entry).suffix.casefold() in _QUICK_TEXT_SUFFIXES
+        if PurePosixPath(entry).suffix.casefold() in _QUICK_TRANSCRIPT_SUFFIXES
         and any(
             marker in PurePosixPath(entry).stem.casefold()
             for marker in _QUICK_TRANSCRIPT_MARKERS
@@ -1185,7 +1208,7 @@ def _quick_layout_manifest(
     ]
     if len(transcript_candidates) != 1:
         raise ValueError(
-            "Для быстрого импорта нужен ровно один UTF-8 файл с именем "
+            "Для быстрого импорта нужен ровно один UTF-8/DOCX файл с именем "
             "transcript/стенограмма/расшифровка"
         )
     if len(description_candidates) != 1:
@@ -1554,6 +1577,7 @@ def _infer_media_type(relative_path: str) -> str:
         ".log": "text/plain",
         ".markdown": "text/markdown",
         ".md": "text/markdown",
+        ".docx": _DOCX_MEDIA_TYPE,
         ".pdf": "application/pdf",
         ".txt": "text/plain",
         ".xml": "application/xml",

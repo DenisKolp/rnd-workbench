@@ -136,6 +136,46 @@ def create_quick_bundle(root: Path) -> Path:
     return root
 
 
+def make_docx(text: str) -> bytes:
+    paragraphs = []
+    for line in text.splitlines():
+        escaped = (
+            line.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        paragraphs.append(f"<w:p><w:r><w:t>{escaped}</w:t></w:r></w:p>")
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+        'wordprocessingml/2006/main"><w:body>'
+        + "".join(paragraphs)
+        + "</w:body></w:document>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", document.encode("utf-8"))
+    return buffer.getvalue()
+
+
+def replace_transcript_with_docx(package: Path, data: bytes) -> None:
+    (package / "transcript.txt").unlink()
+    (package / "transcript.docx").write_bytes(data)
+    manifest_path = package / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["transcript"] = {
+        "path": "transcript.docx",
+        "media_type": (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+    manifest_path.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 def replace_binary_attachment(
     package: Path,
     *,
@@ -354,6 +394,59 @@ def test_quick_bundle_without_manifest_imports_description_and_attachments(
     }
 
 
+def test_manifest_docx_transcript_is_extracted_and_analyzed(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    package = create_package(tmp_path / "docx-manifest")
+    replace_transcript_with_docx(package, make_docx(TRANSCRIPT))
+
+    result = LocalOrchestrator(store).import_synapse_meeting_package(
+        package,
+        workspace_id=store.default_workspace_id(),
+    )
+
+    source = store.get_source(result["source_id"])
+    assert result["status"] == "imported"
+    assert "Решили запустить пилот" in source["content"]
+    assert len(result["analysis"]["decisions"]) == 1
+    assert source["path"].endswith(".docx")
+
+
+def test_quick_docx_transcript_is_inferred_without_manifest(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    bundle = create_quick_bundle(tmp_path / "Запуск-пилота")
+    (bundle / "Расшифровка.txt").unlink()
+    (bundle / "Расшифровка.docx").write_bytes(make_docx(TRANSCRIPT))
+
+    result = LocalOrchestrator(store).import_synapse_meeting_package(
+        bundle,
+        workspace_id=store.default_workspace_id(),
+    )
+
+    primary = store.get_source(result["source_id"])
+    assert primary["title"] == "Запуск пилота"
+    assert "Иван подготовит смету" in primary["content"]
+    assert primary["metadata"]["provenance"]["media_type"].endswith(
+        "wordprocessingml.document"
+    )
+
+
+def test_corrupt_docx_transcript_rolls_back_before_context_creation(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    package = create_package(tmp_path / "corrupt-docx")
+    replace_transcript_with_docx(package, b"not-a-docx")
+
+    with pytest.raises(ValueError, match="безопасно извлечь текст"):
+        LocalOrchestrator(store).import_synapse_meeting_package(
+            package,
+            workspace_id=store.default_workspace_id(),
+        )
+
+    assert not store._rows("SELECT * FROM sources")
+    assert not list(store.files_dir.glob("synapse-*"))
+
+
 def test_quick_directory_and_zip_share_deterministic_import_identity(
     tmp_path: Path,
 ) -> None:
@@ -383,7 +476,7 @@ def test_quick_bundle_rejects_ambiguous_transcript_before_store_mutation(
     bundle = create_quick_bundle(tmp_path / "ambiguous")
     (bundle / "transcript-copy.md").write_text(TRANSCRIPT, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="ровно один UTF-8 файл"):
+    with pytest.raises(ValueError, match="ровно один UTF-8/DOCX файл"):
         LocalOrchestrator(store).import_synapse_meeting_package(
             bundle,
             workspace_id=store.default_workspace_id(),
