@@ -67,7 +67,10 @@
             <div class="chat-heading full-only">
               <div>
                 <p class="eyebrow">РАБОЧИЙ КОНТЕКСТ</p>
-                <h1 id="taskTitle">Новая задача</h1>
+                <div class="task-title-row">
+                  <h1 id="taskTitle">Новая задача</h1>
+                  <span class="classification-badge internal" id="taskClassification">Внутренние</span>
+                </div>
               </div>
               <div class="metrics" id="metricsLabel">Готов к работе</div>
             </div>
@@ -121,6 +124,22 @@
               <button class="text-danger-button" id="deleteMeetingButton" type="button">Удалить</button>
             </div>
           </section>
+          <details class="context-library" id="contextLibrary">
+            <summary>
+              <span>Источники и материалы</span>
+              <span id="contextLibraryCount">0</span>
+            </summary>
+            <div class="context-library-content">
+              <section aria-labelledby="sourceListTitle">
+                <strong id="sourceListTitle">Источники</strong>
+                <div class="context-entity-list" id="sourceList"></div>
+              </section>
+              <section aria-labelledby="artifactListTitle">
+                <strong id="artifactListTitle">Материалы</strong>
+                <div class="context-entity-list" id="artifactList"></div>
+              </section>
+            </div>
+          </details>
           <div class="approval-card">
             <div class="approval-heading">
               <strong>Согласования</strong>
@@ -221,6 +240,38 @@
           <button class="send-button" id="connectButton" type="submit">Подключить</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog class="content-dialog" id="sourceFragmentDialog">
+      <div class="content-dialog-shell">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">ИСПОЛЬЗОВАННЫЙ ФРАГМЕНТ</p>
+            <h2 id="sourceFragmentTitle">Источник</h2>
+          </div>
+          <button class="icon-button" id="sourceFragmentCloseButton" type="button" aria-label="Закрыть">×</button>
+        </div>
+        <div class="source-fragment-meta" id="sourceFragmentMeta"></div>
+        <pre class="source-fragment-text" id="sourceFragmentText"></pre>
+      </div>
+    </dialog>
+
+    <dialog class="content-dialog artifact-history-dialog" id="artifactHistoryDialog">
+      <div class="content-dialog-shell">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">ИСТОРИЯ И ПРОИСХОЖДЕНИЕ</p>
+            <h2 id="artifactHistoryTitle">Материал</h2>
+          </div>
+          <button class="icon-button" id="artifactHistoryCloseButton" type="button" aria-label="Закрыть">×</button>
+        </div>
+        <p class="artifact-history-summary" id="artifactHistorySummary"></p>
+        <div class="artifact-version-list" id="artifactVersionList"></div>
+        <section class="artifact-provenance" aria-labelledby="artifactProvenanceTitle">
+          <strong id="artifactProvenanceTitle">Происхождение</strong>
+          <div id="artifactProvenanceList"></div>
+        </section>
+      </div>
     </dialog>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>

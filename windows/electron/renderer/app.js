@@ -19,6 +19,7 @@ const state = {
   meetingImportKind: "",
   voiceQualificationRunning: false,
   javaFallbackNotified: false,
+  artifactHistory: null,
   ptt: {
     sttAvailable: false,
     sttDetail: "Faster-Whisper не настроен",
@@ -142,6 +143,51 @@ function textNode(tag, className, value) {
   if (className) node.className = className;
   node.textContent = value;
   return node;
+}
+
+const CLASSIFICATION_LABELS = Object.freeze({
+  public: "Публичные",
+  internal: "Внутренние",
+  confidential: "Конфиденциальные",
+  restricted: "Ограниченные",
+});
+
+function normalizedClassification(value) {
+  const normalized = String(value || "internal").toLowerCase();
+  return Object.hasOwn(CLASSIFICATION_LABELS, normalized) ? normalized : "internal";
+}
+
+function classificationBadge(value) {
+  const classification = normalizedClassification(value);
+  return textNode(
+    "span",
+    `classification-badge ${classification}`,
+    CLASSIFICATION_LABELS[classification],
+  );
+}
+
+function decodedMetadata(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function requestSourceFragment(source) {
+  if (!source || typeof source !== "object" || !source.id) return;
+  const payload = { source_id: String(source.id) };
+  if (Number.isInteger(source.char_start) && Number.isInteger(source.char_end)) {
+    payload.char_start = source.char_start;
+    payload.char_end = source.char_end;
+  }
+  if (typeof source.chunk_id === "string" && source.chunk_id) {
+    payload.chunk_id = source.chunk_id;
+  }
+  sendCommand("source_fragment", payload);
 }
 
 function floatToPcm16(samples) {
@@ -879,6 +925,21 @@ function renderMessages() {
       textNode("div", "author", message.role === "user" ? "Вы" : "RnD Workbench"),
       textNode("div", "bubble", String(message.content || "")),
     );
+    const metadata = decodedMetadata(message.metadata);
+    const sources = Array.isArray(metadata.sources) ? metadata.sources : [];
+    if (message.role === "assistant" && sources.length) {
+      const sourceLinks = textNode("div", "message-sources", "");
+      for (const source of sources.slice(0, 5)) {
+        if (!source || typeof source !== "object" || !source.id) continue;
+        const link = textNode("button", "source-chip", String(source.title || "Источник"));
+        link.type = "button";
+        link.title = "Открыть использованный фрагмент";
+        link.append(classificationBadge(source.classification));
+        link.addEventListener("click", () => requestSourceFragment(source));
+        sourceLinks.append(link);
+      }
+      if (sourceLinks.childElementCount) row.append(sourceLinks);
+    }
     container.append(row);
   }
   if (state.streamingText) {
@@ -898,8 +959,12 @@ function renderTasks() {
   const tasks = Array.isArray(state.snapshot.tasks) ? state.snapshot.tasks : [];
   for (const task of tasks) {
     const row = textNode("div", `task-row${task.id === state.snapshot.current_task_id ? " active" : ""}`, "");
-    const open = textNode("button", "task-open", String(task.title || "Новая задача"));
+    const open = textNode("button", "task-open", "");
     open.type = "button";
+    open.append(
+      textNode("span", "task-open-title", String(task.title || "Новая задача")),
+      classificationBadge(task.classification),
+    );
     open.addEventListener("click", () => sendCommand("select_task", { id: task.id }));
     row.append(open);
     const remove = textNode("button", "delete-task", "×");
@@ -916,6 +981,159 @@ function renderTasks() {
   }
   const current = tasks.find((task) => task.id === state.snapshot.current_task_id);
   byId("taskTitle").textContent = String(current?.title || "Новая задача");
+  const taskClassification = byId("taskClassification");
+  const classification = normalizedClassification(current?.classification);
+  taskClassification.className = `classification-badge ${classification}`;
+  taskClassification.textContent = CLASSIFICATION_LABELS[classification];
+}
+
+function renderContextLibrary() {
+  const sources = Array.isArray(state.snapshot.sources) ? state.snapshot.sources : [];
+  const artifacts = Array.isArray(state.snapshot.artifacts) ? state.snapshot.artifacts : [];
+  byId("contextLibraryCount").textContent = String(sources.length + artifacts.length);
+
+  const sourceList = byId("sourceList");
+  sourceList.replaceChildren();
+  for (const source of sources.slice(0, 6)) {
+    const row = textNode("div", "context-entity-row", "");
+    const open = textNode("button", "context-entity-open", String(source.title || "Источник"));
+    open.type = "button";
+    open.title = "Показать источник";
+    open.addEventListener("click", () => requestSourceFragment(source));
+    const remove = textNode("button", "context-entity-delete", "×");
+    remove.type = "button";
+    remove.title = "Удалить источник";
+    remove.setAttribute("aria-label", `Удалить источник ${String(source.title || "")}`);
+    remove.addEventListener("click", () => {
+      if (window.confirm(`Удалить источник «${String(source.title || "Источник")}»?`)) {
+        sendCommand("delete_source", { source_id: source.id });
+      }
+    });
+    row.append(open, classificationBadge(source.classification), remove);
+    sourceList.append(row);
+  }
+  if (!sourceList.childElementCount) {
+    sourceList.append(textNode("span", "context-entity-empty", "Источников пока нет"));
+  }
+
+  const artifactList = byId("artifactList");
+  artifactList.replaceChildren();
+  for (const artifact of artifacts.slice(0, 6)) {
+    const row = textNode("div", "context-entity-row", "");
+    const open = textNode("button", "context-entity-open", String(artifact.title || "Материал"));
+    open.type = "button";
+    open.title = "Открыть историю материала";
+    open.addEventListener("click", () => {
+      sendCommand("artifact_versions", { artifact_id: artifact.id });
+    });
+    const remove = textNode("button", "context-entity-delete", "×");
+    remove.type = "button";
+    remove.title = "Удалить материал";
+    remove.setAttribute("aria-label", `Удалить материал ${String(artifact.title || "")}`);
+    remove.addEventListener("click", () => {
+      if (window.confirm(`Удалить материал «${String(artifact.title || "Материал")}» и его версии?`)) {
+        sendCommand("delete_artifact", { artifact_id: artifact.id });
+      }
+    });
+    row.append(open, classificationBadge(artifact.classification), remove);
+    artifactList.append(row);
+  }
+  if (!artifactList.childElementCount) {
+    artifactList.append(textNode("span", "context-entity-empty", "Материалов пока нет"));
+  }
+}
+
+function openSourceFragment(source) {
+  if (!source || typeof source !== "object") return;
+  byId("sourceFragmentTitle").textContent = String(source.title || "Источник");
+  const start = Number(source.char_start || 0);
+  const end = Number(source.char_end || 0);
+  const prefix = source.exact === true ? "Точный фрагмент" : "Начало источника";
+  byId("sourceFragmentMeta").replaceChildren(
+    classificationBadge(source.classification),
+    textNode("span", "", `${prefix} · символы ${start}–${end}`),
+  );
+  byId("sourceFragmentText").textContent = String(source.excerpt || "");
+  const dialog = byId("sourceFragmentDialog");
+  if (!dialog.open) dialog.showModal();
+}
+
+function entityTitle(collection, id, fallback) {
+  const rows = Array.isArray(collection) ? collection : [];
+  return String(rows.find((item) => String(item.id) === String(id))?.title || fallback);
+}
+
+function renderArtifactHistory(payload) {
+  if (!payload || typeof payload !== "object" || !payload.artifact) return;
+  state.artifactHistory = payload;
+  const artifact = payload.artifact;
+  const versions = Array.isArray(payload.versions) ? payload.versions : [];
+  const relations = Array.isArray(payload.relations) ? payload.relations : [];
+  byId("artifactHistoryTitle").textContent = String(artifact.title || "Материал");
+  byId("artifactHistorySummary").replaceChildren(
+    classificationBadge(artifact.classification),
+    textNode("span", "", `Текущая версия: ${Number(artifact.current_version || 1)} · всего ${versions.length}`),
+  );
+
+  const versionList = byId("artifactVersionList");
+  versionList.replaceChildren();
+  for (const version of [...versions].reverse()) {
+    const row = textNode("div", `artifact-version-row${version.is_current ? " current" : ""}`, "");
+    const copy = textNode("div", "artifact-version-copy", "");
+    copy.append(
+      textNode("strong", "", `Версия ${Number(version.version || 0)}`),
+      textNode("span", "", version.is_current ? "Текущая" : String(version.created_at || "")),
+    );
+    row.append(copy, classificationBadge(version.classification));
+    if (!version.is_current) {
+      const restore = textNode("button", "secondary-button artifact-restore", "Восстановить");
+      restore.type = "button";
+      restore.addEventListener("click", () => {
+        if (window.confirm(`Создать новую версию из версии ${Number(version.version)}?`)) {
+          sendCommand("restore_artifact", {
+            artifact_id: artifact.id,
+            version: Number(version.version),
+          });
+        }
+      });
+      row.append(restore);
+    }
+    versionList.append(row);
+  }
+
+  const relationLabels = {
+    produced_by_task: "Создано задачей",
+    derived_from_source: "Получено из источника",
+    derived_from_artifact: "Создано из материала",
+    restored_from: "Восстановлено из версии",
+    revision_of: "Продолжает версию",
+  };
+  const provenanceList = byId("artifactProvenanceList");
+  provenanceList.replaceChildren();
+  for (const relation of relations.slice(-20).reverse()) {
+    const metadata = decodedMetadata(relation.metadata);
+    let target = "";
+    if (relation.source_id) {
+      target = entityTitle(state.snapshot.sources, relation.source_id, "Источник");
+    } else if (relation.task_id) {
+      target = entityTitle(state.snapshot.tasks, relation.task_id, "Задача");
+    } else if (relation.related_artifact_id) {
+      target = entityTitle(state.snapshot.artifacts, relation.related_artifact_id, "Материал");
+    }
+    const coordinates = Number.isInteger(metadata.char_start) && Number.isInteger(metadata.char_end)
+      ? ` · символы ${metadata.char_start}–${metadata.char_end}`
+      : "";
+    provenanceList.append(textNode(
+      "div",
+      "artifact-provenance-row",
+      `v${Number(relation.artifact_version || 0)} · ${relationLabels[relation.relation_type] || "Связано"}${target ? `: ${target}` : ""}${coordinates}`,
+    ));
+  }
+  if (!provenanceList.childElementCount) {
+    provenanceList.append(textNode("span", "context-entity-empty", "Связи происхождения не зафиксированы"));
+  }
+  const dialog = byId("artifactHistoryDialog");
+  if (!dialog.open) dialog.showModal();
 }
 
 function renderApprovals() {
@@ -1282,6 +1500,7 @@ function renderSnapshot() {
   renderTasks();
   renderApprovals();
   renderMeetings();
+  renderContextLibrary();
   renderRuntime();
   renderVoiceCapability();
   renderPilotMetrics();
@@ -1398,6 +1617,23 @@ function handleBackendEvent(event) {
       case "routing_blocked":
         setResponsePending(false);
         toast(String(event.message || "Передача контекста заблокирована политикой данных"));
+        break;
+      case "source_fragment":
+        openSourceFragment(event.source);
+        break;
+      case "artifact_versions":
+        renderArtifactHistory(event);
+        break;
+      case "artifact_restored":
+        renderArtifactHistory(event);
+        toast("Версия восстановлена как новая текущая версия");
+        break;
+      case "entity_deleted":
+        if (event.entity === "artifact" && byId("artifactHistoryDialog").open) {
+          byId("artifactHistoryDialog").close();
+          state.artifactHistory = null;
+        }
+        toast(event.recovery === "trash" ? "Удалено с возможностью восстановления" : "Удалено");
         break;
       case "approval_resolved":
         toast(event.status === "rejected" ? "Действие отклонено" : "Действие завершено");
@@ -1786,6 +2022,8 @@ byId("closeButton").addEventListener("click", () => window.rndWorkbench.close())
 byId("settingsButton").addEventListener("click", openSettings);
 byId("settingsCloseButton").addEventListener("click", () => byId("settingsDialog").close());
 byId("settingsCancelButton").addEventListener("click", () => byId("settingsDialog").close());
+byId("sourceFragmentCloseButton").addEventListener("click", () => byId("sourceFragmentDialog").close());
+byId("artifactHistoryCloseButton").addEventListener("click", () => byId("artifactHistoryDialog").close());
 byId("voiceTab").addEventListener("click", () => setCompactView("voice"));
 byId("chatTab").addEventListener("click", () => setCompactView("chat"));
 byId("newTaskButton").addEventListener("click", () => sendCommand("new_task", { title: "Новая задача" }));

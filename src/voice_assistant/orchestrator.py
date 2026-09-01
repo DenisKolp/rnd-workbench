@@ -604,6 +604,9 @@ class LocalOrchestrator:
             "title": source["title"],
             "kind": source["kind"],
             "path": source.get("path"),
+            "classification": normalize_classification(
+                source.get("classification"),
+            ),
         }
         # Keep the durable retrieval coordinates all the way to the UI and
         # persisted assistant-message metadata.  A path alone can reopen the

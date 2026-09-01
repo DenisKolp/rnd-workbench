@@ -735,9 +735,10 @@ def test_assistant_message_persists_source_references_and_skill(tmp_path) -> Non
         {
             "id": source["id"],
             "title": source["title"],
-            "kind": source["kind"],
-            "path": source["path"],
-            "chunk_id": retrieved["chunk_id"],
+                "kind": source["kind"],
+                "path": source["path"],
+                "classification": source["classification"],
+                "chunk_id": retrieved["chunk_id"],
             "char_start": retrieved["char_start"],
             "char_end": retrieved["char_end"],
             "excerpt": retrieved["excerpt"],

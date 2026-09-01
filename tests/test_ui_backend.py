@@ -1576,6 +1576,7 @@ def test_turn_events_expose_durable_source_reference_contract(capsys, tmp_path) 
         "title": source["title"],
         "kind": source["kind"],
         "path": source["path"],
+        "classification": source["classification"],
         "chunk_id": retrieved["chunk_id"],
         "char_start": retrieved["char_start"],
         "char_end": retrieved["char_end"],

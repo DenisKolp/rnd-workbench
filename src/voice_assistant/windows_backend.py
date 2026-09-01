@@ -1049,6 +1049,16 @@ class WindowsPilotBackend:
             self.export_pilot_metrics(command)
         elif name == "snapshot":
             self.emit_snapshot()
+        elif name == "source_fragment":
+            self.emit_source_fragment(command)
+        elif name == "artifact_versions":
+            self.emit_artifact_versions(command)
+        elif name == "restore_artifact":
+            self.restore_artifact_version(command)
+        elif name == "delete_artifact":
+            self.delete_artifact(command)
+        elif name == "delete_source":
+            self.delete_source(command)
         elif name in {"clear", "new_task"}:
             title = str(command.get("title") or "Новая задача").strip() or "Новая задача"
             task = self.store.create_task(self.current_workspace_id, title)
@@ -1106,6 +1116,131 @@ class WindowsPilotBackend:
             self._finish_pilot_session()
         else:
             self.emitter.emit("error", message=f"Неизвестная команда: {name}")
+
+    def emit_source_fragment(self, command: dict[str, Any]) -> None:
+        """Return one bounded source passage selected by durable coordinates."""
+
+        source_id = str(command.get("source_id") or command.get("id") or "").strip()
+        if not source_id:
+            raise ValueError("Не указан источник")
+        source = self.store.get_source(source_id)
+        if str(source["workspace_id"]) != self.current_workspace_id:
+            raise ValueError("Источник находится в другом рабочем пространстве")
+
+        content = str(source.get("content") or "")
+        raw_start = command.get("char_start")
+        raw_end = command.get("char_end")
+        has_coordinates = raw_start is not None or raw_end is not None
+        if has_coordinates:
+            if (
+                isinstance(raw_start, bool)
+                or isinstance(raw_end, bool)
+                or not isinstance(raw_start, int)
+                or not isinstance(raw_end, int)
+                or not 0 <= raw_start < raw_end <= len(content)
+            ):
+                raise ValueError("Координаты фрагмента больше не соответствуют источнику")
+            start = raw_start
+            end = min(raw_end, start + 8_000)
+        else:
+            start = 0
+            end = min(len(content), 4_000)
+
+        self.emitter.emit(
+            "source_fragment",
+            source={
+                "id": source_id,
+                "title": str(source.get("title") or "Источник"),
+                "kind": str(source.get("kind") or "document"),
+                "path": source.get("path"),
+                "classification": str(source.get("classification") or "internal"),
+                "chunk_id": (
+                    str(command.get("chunk_id"))[:160]
+                    if command.get("chunk_id") is not None
+                    else None
+                ),
+                "char_start": start,
+                "char_end": end,
+                "excerpt": content[start:end],
+                "exact": has_coordinates and end == raw_end,
+                "truncated": has_coordinates and end < raw_end,
+            },
+        )
+
+    def _current_artifact(self, command: dict[str, Any]) -> dict[str, Any]:
+        artifact_id = str(
+            command.get("artifact_id") or command.get("id") or ""
+        ).strip()
+        if not artifact_id:
+            raise ValueError("Не указан материал")
+        artifact = self.store.get_artifact(artifact_id)
+        if str(artifact["workspace_id"]) != self.current_workspace_id:
+            raise ValueError("Материал находится в другом рабочем пространстве")
+        return artifact
+
+    def emit_artifact_versions(self, command: dict[str, Any]) -> None:
+        artifact = self._current_artifact(command)
+        artifact_id = str(artifact["id"])
+        self.emitter.emit(
+            "artifact_versions",
+            artifact=artifact,
+            versions=self.store.artifact_versions(artifact_id),
+            relations=self.store.artifact_relations(artifact_id),
+        )
+
+    def restore_artifact_version(self, command: dict[str, Any]) -> None:
+        if self._busy():
+            raise RuntimeError("Дождитесь завершения текущей операции")
+        artifact = self._current_artifact(command)
+        raw_version = command.get("version")
+        if isinstance(raw_version, bool) or not isinstance(raw_version, int):
+            raise ValueError("Не указана версия для восстановления")
+        restored = self.store.restore_artifact(str(artifact["id"]), raw_version)
+        artifact_id = str(restored["id"])
+        self.emitter.emit(
+            "artifact_restored",
+            artifact=restored,
+            versions=self.store.artifact_versions(artifact_id),
+            relations=self.store.artifact_relations(artifact_id),
+        )
+        self.emit_snapshot()
+
+    def delete_artifact(self, command: dict[str, Any]) -> None:
+        if self._busy():
+            raise RuntimeError("Дождитесь завершения текущей операции")
+        artifact = self._current_artifact(command)
+        result = self.store.delete_artifact(str(artifact["id"]))
+        self.emitter.emit(
+            "entity_deleted",
+            entity="artifact",
+            id=str(artifact["id"]),
+            recovery="trash" if result["trashed_files"] else "database_only",
+        )
+        self.emit_snapshot()
+
+    def delete_source(self, command: dict[str, Any]) -> None:
+        if self._busy():
+            raise RuntimeError("Дождитесь завершения текущей операции")
+        source_id = str(command.get("source_id") or command.get("id") or "").strip()
+        if not source_id:
+            raise ValueError("Не указан источник")
+        source = self.store.get_source(source_id)
+        if str(source["workspace_id"]) != self.current_workspace_id:
+            raise ValueError("Источник находится в другом рабочем пространстве")
+        result = self.store.delete_source_package_aware(source_id)
+        if self.current_meeting_id in {
+            str(item) for item in result.get("deleted_meeting_ids", [])
+        }:
+            self.current_meeting_id = None
+            self._meeting_briefing = ""
+        self.emitter.emit(
+            "entity_deleted",
+            entity="source",
+            id=source_id,
+            recovery="trash" if result["trashed_files"] else "database_only",
+            deleted_sources=int(result.get("deleted_sources", 1)),
+        )
+        self.emit_snapshot()
 
     def resolve_approval(self, approval_id: str, status: str) -> None:
         if not approval_id:

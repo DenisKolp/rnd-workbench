@@ -429,6 +429,143 @@ def test_windows_pilot_feedback_command_is_bounded_and_content_free(tmp_path) ->
         backend.handle({"command": "set_pilot_feedback", "usefulness_rating": 0})
 
 
+def test_windows_source_fragment_uses_durable_coordinates_and_workspace_scope(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)
+    content = "Введение. " + ("Фоновый текст. " * 40) + "Точный вывод пилота."
+    source = backend.store.add_source(
+        backend.current_workspace_id,
+        "document",
+        "Отчёт пилота",
+        content,
+        classification="confidential",
+    )
+    start = content.index("Точный вывод")
+    end = len(content)
+
+    backend.handle(
+        {
+            "command": "source_fragment",
+            "source_id": source["id"],
+            "chunk_id": "chunk-contract-1",
+            "char_start": start,
+            "char_end": end,
+        }
+    )
+
+    event = emitter.events[-1]
+    assert event["type"] == "source_fragment"
+    assert event["source"] == {
+        "id": source["id"],
+        "title": "Отчёт пилота",
+        "kind": "document",
+        "path": None,
+        "classification": "confidential",
+        "chunk_id": "chunk-contract-1",
+        "char_start": start,
+        "char_end": end,
+            "excerpt": "Точный вывод пилота.",
+            "exact": True,
+            "truncated": False,
+        }
+
+    with pytest.raises(ValueError, match="Координаты"):
+        backend.handle(
+            {
+                "command": "source_fragment",
+                "source_id": source["id"],
+                "char_start": end,
+                "char_end": end + 1,
+            }
+        )
+
+    other = backend.store.create_workspace("Другое пространство")
+    foreign = backend.store.add_source(
+        other["id"],
+        "document",
+        "Чужой источник",
+        "Не показывать",
+    )
+    with pytest.raises(ValueError, match="другом рабочем пространстве"):
+        backend.handle({"command": "source_fragment", "source_id": foreign["id"]})
+
+
+def test_windows_artifact_history_restore_provenance_and_delete_contract(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)
+    task = backend.store.create_task(backend.current_workspace_id, "Подготовить отчёт")
+    source = backend.store.add_source(
+        backend.current_workspace_id,
+        "document",
+        "Основание",
+        "Проверенный факт",
+        classification="confidential",
+    )
+    artifact = backend.store.create_artifact(
+        backend.current_workspace_id,
+        task["id"],
+        "Отчёт",
+        "Первая версия",
+        source_refs=[
+            {
+                "id": source["id"],
+                "chunk_id": "chunk-1",
+                "char_start": 0,
+                "char_end": 16,
+                "selection": "retrieved",
+            }
+        ],
+    )
+    backend.store.update_artifact(artifact["id"], "Вторая версия")
+
+    backend.handle({"command": "artifact_versions", "artifact_id": artifact["id"]})
+    history = emitter.events[-1]
+    assert history["type"] == "artifact_versions"
+    assert [item["version"] for item in history["versions"]] == [1, 2]
+    source_relation = next(
+        item
+        for item in history["relations"]
+        if item["relation_type"] == "derived_from_source"
+    )
+    assert source_relation["source_id"] == source["id"]
+    assert source_relation["metadata"]["char_start"] == 0
+    assert source_relation["metadata"]["char_end"] == 16
+
+    backend.handle(
+        {
+            "command": "restore_artifact",
+            "artifact_id": artifact["id"],
+            "version": 1,
+        }
+    )
+    restored = next(
+        event for event in reversed(emitter.events)
+        if event["type"] == "artifact_restored"
+    )
+    assert restored["artifact"]["current_version"] == 3
+    assert restored["versions"][-1]["metadata"]["restored_from_version"] == 1
+    assert any(
+        relation["relation_type"] == "restored_from"
+        and relation["related_artifact_version"] == 1
+        for relation in restored["relations"]
+    )
+
+    backend.store.trash_dir = tmp_path / "trash"
+    backend.handle({"command": "delete_artifact", "artifact_id": artifact["id"]})
+    deleted = next(
+        event for event in reversed(emitter.events)
+        if event["type"] == "entity_deleted"
+    )
+    assert deleted["entity"] == "artifact"
+    assert deleted["id"] == artifact["id"]
+    with pytest.raises(KeyError):
+        backend.store.get_artifact(artifact["id"])
+
+
 def test_windows_text_turn_is_gated_by_java_core_before_llm(tmp_path) -> None:
     emitter = CapturingEmitter()
     core = FakeCorePolicy()

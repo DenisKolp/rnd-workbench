@@ -478,6 +478,36 @@ def test_windows_meeting_result_is_visible_without_overloading_import_controls()
     assert "white-space: normal" in styles
 
 
+def test_windows_source_and_artifact_controls_are_collapsed_and_fragment_aware() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+    styles = (ROOT / "windows" / "electron" / "renderer" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert '<details class="context-library" id="contextLibrary">' in html
+    assert "<span>Источники и материалы</span>" in html
+    assert 'id="sourceFragmentDialog"' in html
+    assert 'id="artifactHistoryDialog"' in html
+    assert 'id="taskClassification"' in html
+    assert "function requestSourceFragment(source)" in renderer
+    assert 'sendCommand("source_fragment"' in renderer
+    assert "function renderArtifactHistory(payload)" in renderer
+    assert 'sendCommand("artifact_versions"' in renderer
+    assert 'sendCommand("restore_artifact"' in renderer
+    assert 'sendCommand("delete_source"' in renderer
+    assert 'sendCommand("delete_artifact"' in renderer
+    assert "decodedMetadata(message.metadata)" in renderer
+    assert "metadata.sources" in renderer
+    assert "char_start" in renderer and "char_end" in renderer
+    assert ".context-library > summary { display: flex; min-height: 32px;" in styles
+    assert ".source-chip" in styles and "overflow-wrap: anywhere" in styles
+    compact_section = html.split('<nav class="compact-switch compact-only"', maxsplit=1)[1].split(
+        '<section class="chat-card"', maxsplit=1
+    )[0]
+    assert "contextLibrary" not in compact_section
+
+
 def test_renderer_uses_short_mode_copy_and_safe_local_settings_default() -> None:
     renderer = RENDERER.read_text(encoding="utf-8")
     html = HTML.read_text(encoding="utf-8")
