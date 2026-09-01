@@ -22,7 +22,7 @@
           <button class="icon-button" id="settingsButton" title="Настройки модели" aria-label="Настройки модели">⚙</button>
           <button class="mode-button" id="modeButton" aria-label="Развернуть в полное окно">Развернуть</button>
           <button class="icon-button window-button" id="minimizeButton" title="Свернуть" aria-label="Свернуть">—</button>
-          <button class="icon-button window-button close" id="closeButton" title="Закрыть" aria-label="Закрыть">×</button>
+          <button class="icon-button window-button close" id="closeButton" title="Скрыть в область уведомлений" aria-label="Скрыть в область уведомлений">×</button>
         </div>
       </header>
 
@@ -149,14 +149,62 @@
               </section>
             </div>
           </details>
-          <div class="approval-card">
-            <div class="approval-heading">
+          <details class="automation-card" id="automationCard">
+            <summary>
+              <span>Автоматизации</span>
+              <span id="automationCount">0</span>
+            </summary>
+            <div class="automation-content">
+              <p id="automationBackgroundStatus">Локальные дайджесты работают, пока приложение запущено.</p>
+              <form class="automation-form" id="automationForm">
+                <label>
+                  Название
+                  <input id="automationName" type="text" maxlength="120" value="Рабочий дайджест" required />
+                </label>
+                <div class="automation-form-grid">
+                  <label>
+                    Период
+                    <select id="automationPeriod">
+                      <option value="morning">Утро</option>
+                      <option value="evening">Вечер</option>
+                      <option value="weekly">Неделя</option>
+                    </select>
+                  </label>
+                  <label>
+                    Состав
+                    <select id="automationFocus">
+                      <option value="all">Всё</option>
+                      <option value="risks_actions">Риски и поручения</option>
+                      <option value="tasks">Задачи</option>
+                      <option value="meetings">Встречи</option>
+                      <option value="inbox">Уведомления</option>
+                      <option value="artifacts">Материалы</option>
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  Расписание
+                  <input id="automationSchedule" type="text" maxlength="120" value="ежедневно 09:00" required />
+                </label>
+                <small>Например: ежедневно 09:00 или каждую пятницу 17:00.</small>
+                <div class="automation-form-actions">
+                  <button class="secondary-button" id="automationCancelButton" type="button" hidden>Отмена</button>
+                  <button class="secondary-button primary" id="automationSaveButton" type="submit">Добавить</button>
+                </div>
+              </form>
+              <div class="automation-list" id="automationList"></div>
+            </div>
+          </details>
+          <details class="approval-card" id="approvalCard">
+            <summary class="approval-heading">
               <strong>Согласования</strong>
               <span id="approvalCount">0</span>
+            </summary>
+            <div class="approval-content">
+              <p>Внешние изменения выполняются только после подтверждения. Повторная отправка блокируется автоматически.</p>
+              <div id="approvalList" class="approval-list"></div>
             </div>
-            <p>Внешние изменения выполняются только после подтверждения. Повторная отправка блокируется автоматически.</p>
-            <div id="approvalList" class="approval-list"></div>
-          </div>
+          </details>
           <details class="pilot-diagnostics">
             <summary>Диагностика пилота</summary>
             <div class="pilot-diagnostics-content">

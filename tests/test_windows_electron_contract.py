@@ -284,10 +284,11 @@ def test_full_window_wraps_long_task_titles_and_preserves_route_label() -> None:
     assert "white-space: normal" in styles
     assert 'body[data-mode="full"] .brand-copy span { max-width: 300px; font-size: 10px; }' in styles
     assert '.compact-switch button { min-width: 88px; min-height: 32px;' in styles
-    assert '.mode-button { min-height: 32px;' in styles
+    assert '.mode-button { min-width: 0; min-height: 32px;' in styles
 
 
 def test_full_window_uses_vertical_tool_panel_and_collapses_diagnostics() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
     html = HTML.read_text(encoding="utf-8")
     styles = (ROOT / "windows" / "electron" / "renderer" / "styles.css").read_text(
         encoding="utf-8"
@@ -296,6 +297,7 @@ def test_full_window_uses_vertical_tool_panel_and_collapses_diagnostics() -> Non
     assert '<p class="eyebrow">РАБОЧИЙ КОНТУР</p>' in html
     assert '<h2>Инструменты</h2>' in html
     assert '<details class="pilot-diagnostics">' in html
+    assert '<details class="approval-card" id="approvalCard">' in html
     assert '<summary>Диагностика пилота</summary>' in html
     assert '<option value="0" selected disabled>Не указана</option>' in html
     assert 'body[data-mode="full"] .full-only { display: block !important; }' in styles
@@ -303,6 +305,51 @@ def test_full_window_uses_vertical_tool_panel_and_collapses_diagnostics() -> Non
     assert 'body[data-mode="full"] .chat-heading { display: flex !important; }' in styles
     assert '.pilot-diagnostics > summary { display: flex; min-height: 32px;' in styles
     assert '.pilot-usage-details summary { display: flex; min-height: 30px;' in styles
+    assert "if (approvals.length > previousCount) card.open = true" in renderer
+    assert "if (!approvals.length) card.open = false" in renderer
+
+
+def test_windows_digest_automations_are_collapsed_editable_and_text_safe() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+    styles = (ROOT / "windows" / "electron" / "renderer" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert '<details class="automation-card" id="automationCard">' in html
+    assert '<span>Автоматизации</span>' in html
+    assert 'id="automationFocus"' in html
+    assert '<option value="risks_actions">Риски и поручения</option>' in html
+    assert 'id="automationSaveButton" type="submit">Добавить</button>' in html
+    assert "function renderAutomations()" in renderer
+    assert "function digestPrompt(period, focus)" in renderer
+    assert 'sendCommand("create_automation"' in renderer
+    assert 'sendCommand("update_automation"' in renderer
+    assert 'sendCommand("toggle_automation"' in renderer
+    assert 'sendCommand("delete_automation"' in renderer
+    assert "row.append(heading, actions)" in renderer
+    assert "innerHTML" not in renderer
+    assert '.automation-form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));' in styles
+    assert '.automation-row-actions button { min-width: 0; min-height: 30px;' in styles
+    assert "white-space: normal" in styles
+    assert ".mode-button { min-width: 0; min-height: 32px;" in styles
+    assert "overflow-wrap: anywhere" in styles
+
+
+def test_windows_close_hides_to_tray_and_quit_remains_explicit() -> None:
+    source = MAIN.read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+
+    assert "Menu, screen, Tray" in source
+    assert "function createTray()" in source
+    assert "tray = new Tray(process.execPath)" in source
+    assert 'label: "Открыть RnD Workbench"' in source
+    assert 'label: "Выход"' in source
+    assert 'mainWindow.on("close", (event) =>' in source
+    assert "event.preventDefault()" in source
+    assert "mainWindow.hide()" in source
+    assert "if (!tray) app.quit()" in source
+    assert 'title="Скрыть в область уведомлений"' in html
 
 
 def test_global_f8_push_to_talk_is_packaged_and_bridged_without_node_exposure() -> None:

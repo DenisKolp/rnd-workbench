@@ -13,6 +13,21 @@ _DIGEST_TITLES = {
     "evening": "Вечерний дайджест",
     "weekly": "Итоги недели",
 }
+_DIGEST_SECTION_ORDER = ("tasks", "meeting_items", "inbox", "artifacts")
+_DIGEST_SECTION_TITLES = {
+    "tasks": "задачи",
+    "meeting_items": "встречи",
+    "inbox": "уведомления",
+    "artifacts": "материалы",
+}
+_DIGEST_KIND_TITLES = {
+    "decision": "решения",
+    "action": "поручения",
+    "commitment": "обязательства",
+    "risk": "риски",
+    "question": "вопросы",
+    "topic": "темы",
+}
 _MEETING_LABELS = {
     "decision": "Решение",
     "action": "Поручение",
@@ -179,21 +194,94 @@ def parse_digest_command(
     *,
     now: datetime | None = None,
 ) -> str | None:
+    request = parse_digest_request(text, now=now)
+    return None if request is None else str(request["period"])
+
+
+def parse_digest_request(
+    text: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Parse a local digest request with an optional transparent focus.
+
+    The supported user form is deliberately small and inspectable, for example
+    ``/digest неделя только риски и поручения``.  The returned section and
+    meeting-kind filters are persisted with the artifact, so a scheduled digest
+    can be reproduced without asking an LLM to reinterpret its scope.
+    """
+
     match = re.fullmatch(r"\s*/digest(?:\s+(.+?))?\s*", text, flags=re.IGNORECASE)
     if not match:
         return None
     argument = re.sub(r"\s+", " ", (match.group(1) or "").casefold().strip())
+    focus = ""
+    focus_match = re.search(r"\bтолько\b\s+(.+)$", argument)
+    if focus_match:
+        focus = focus_match.group(1).strip(" .,:;—–-")
+        argument = argument[: focus_match.start()].strip(" .,:;—–-")
+
     if argument:
         if re.search(r"\b(?:недел\w*|weekly|week)\b", argument):
-            return "weekly"
-        if re.search(r"\b(?:вечер\w*|итоги\s+дня|evening)\b", argument):
-            return "evening"
-        if re.search(r"\b(?:утр\w*|начало\s+дня|morning)\b", argument):
-            return "morning"
-        if not re.search(r"\b(?:дайджест\w*|сводк\w*|обнов\w*)\b", argument):
+            period = "weekly"
+        elif re.search(r"\b(?:вечер\w*|итоги\s+дня|evening)\b", argument):
+            period = "evening"
+        elif re.search(r"\b(?:утр\w*|начало\s+дня|morning)\b", argument):
+            period = "morning"
+        elif re.search(r"\b(?:дайджест\w*|сводк\w*|обнов\w*)\b", argument):
+            local_now = (now or datetime.now().astimezone()).astimezone()
+            period = "morning" if local_now.hour < 15 else "evening"
+        else:
             raise ValueError("После /digest укажите: утро, вечер или неделя")
-    local_now = (now or datetime.now().astimezone()).astimezone()
-    return "morning" if local_now.hour < 15 else "evening"
+    else:
+        local_now = (now or datetime.now().astimezone()).astimezone()
+        period = "morning" if local_now.hour < 15 else "evening"
+
+    sections = list(_DIGEST_SECTION_ORDER)
+    meeting_kinds: list[str] = []
+    focus_label = ""
+    if focus:
+        selected_sections: set[str] = set()
+        if re.search(r"\bзадач\w*\b", focus):
+            selected_sections.add("tasks")
+        if re.search(r"\b(?:уведомлен\w*|входящ\w*)\b", focus):
+            selected_sections.add("inbox")
+        if re.search(r"\b(?:материал\w*|артефакт\w*|документ\w*)\b", focus):
+            selected_sections.add("artifacts")
+        if re.search(r"\b(?:встреч\w*|решени\w*|поручени\w*|обязательств\w*|риск\w*|вопрос\w*|тем\w*)\b", focus):
+            selected_sections.add("meeting_items")
+        kind_patterns = {
+            "decision": r"\bрешени\w*\b",
+            "action": r"\bпоручени\w*\b",
+            "commitment": r"\bобязательств\w*\b",
+            "risk": r"\bриск\w*\b",
+            "question": r"\bвопрос\w*\b",
+            "topic": r"\bтем\w*\b",
+        }
+        meeting_kinds = [
+            kind for kind, pattern in kind_patterns.items() if re.search(pattern, focus)
+        ]
+        if not selected_sections:
+            raise ValueError(
+                "После «только» укажите: задачи, встречи, риски, поручения, "
+                "уведомления или материалы"
+            )
+        sections = [
+            section for section in _DIGEST_SECTION_ORDER if section in selected_sections
+        ]
+        labels = (
+            [_DIGEST_KIND_TITLES[kind] for kind in meeting_kinds]
+            if selected_sections == {"meeting_items"} and meeting_kinds
+            else [_DIGEST_SECTION_TITLES[section] for section in sections]
+        )
+        focus_label = " и ".join(labels)
+
+    return {
+        "period": period,
+        "sections": sections,
+        "meeting_kinds": meeting_kinds,
+        "focus_label": focus_label,
+    }
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -211,11 +299,24 @@ def build_digest(
     workspace_id: str,
     period: str,
     *,
+    sections: list[str] | tuple[str, ...] | None = None,
+    meeting_kinds: list[str] | tuple[str, ...] | None = None,
+    focus_label: str = "",
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic digest exclusively from local structured rows."""
 
     period = normalize_digest_period(period)
+    selected_sections = tuple(
+        section
+        for section in _DIGEST_SECTION_ORDER
+        if section in set(sections or _DIGEST_SECTION_ORDER)
+    )
+    if not selected_sections:
+        raise ValueError("Дайджест должен включать хотя бы один раздел")
+    selected_meeting_kinds = tuple(
+        kind for kind in _MEETING_LABELS if kind in set(meeting_kinds or ())
+    )
     generated_at = now or datetime.now(UTC)
     if generated_at.tzinfo is None:
         generated_at = generated_at.replace(tzinfo=UTC)
@@ -298,6 +399,11 @@ def build_digest(
             item for item in artifacts if is_week(item["updated_at"])
         ][:8]
 
+    if selected_meeting_kinds:
+        selected_meetings = [
+            item for item in selected_meetings if item["kind"] in selected_meeting_kinds
+        ]
+
     references: list[dict[str, Any]] = []
     classifications = [str(workspace["classification"])]
 
@@ -336,9 +442,11 @@ def build_digest(
             updated_at=str(item["updated_at"]),
         )
         for item in selected_tasks
-    ]
+    ] if "tasks" in selected_sections else []
     meeting_result_items = []
-    for item in selected_meetings:
+    for item in (
+        selected_meetings if "meeting_items" in selected_sections else []
+    ):
         detail_parts = [str(item["text"])]
         if item.get("owner"):
             detail_parts.append(f"Исполнитель: {item['owner']}")
@@ -380,7 +488,7 @@ def build_digest(
             created_at=str(item["created_at"]),
         )
         for item in selected_inbox
-    ]
+    ] if "inbox" in selected_sections else []
     artifact_items = [
         referenced_item(
             reference_type="artifact",
@@ -396,8 +504,8 @@ def build_digest(
             updated_at=str(item["updated_at"]),
         )
         for item in selected_artifacts
-    ]
-    sections = [
+    ] if "artifacts" in selected_sections else []
+    digest_sections = [
         {"id": "tasks", "title": "Задачи", "items": task_items},
         {
             "id": "meeting_items",
@@ -407,9 +515,22 @@ def build_digest(
         {"id": "inbox", "title": "Уведомления", "items": inbox_items},
         {"id": "artifacts", "title": "Материалы", "items": artifact_items},
     ]
+    digest_sections = [
+        section for section in digest_sections if section["id"] in selected_sections
+    ]
+    normalized_focus_label = re.sub(r"\s+", " ", focus_label.strip())[:120]
     digest = {
         "period": period,
-        "title": _DIGEST_TITLES[period],
+        "title": (
+            f"{_DIGEST_TITLES[period]} · {normalized_focus_label}"
+            if normalized_focus_label
+            else _DIGEST_TITLES[period]
+        ),
+        "configuration": {
+            "sections": list(selected_sections),
+            "meeting_kinds": list(selected_meeting_kinds),
+            "focus_label": normalized_focus_label,
+        },
         "workspace": {"id": workspace_id, "name": workspace["name"]},
         "generated_at": generated_at.isoformat(timespec="seconds"),
         "local_only": True,
@@ -418,9 +539,11 @@ def build_digest(
             "Почта, календарь, Синапс и другие корпоративные системы не подключены."
         ),
         "classification": highest_classification(classifications),
-        "sections": sections,
+        "sections": digest_sections,
         "references": references,
-        "counts": {section["id"]: len(section["items"]) for section in sections},
+        "counts": {
+            section["id"]: len(section["items"]) for section in digest_sections
+        },
         "empty": not references,
     }
     digest["text"] = render_digest(digest)
@@ -467,12 +590,23 @@ def persist_digest(
     workspace_id: str,
     period: str,
     *,
+    sections: list[str] | tuple[str, ...] | None = None,
+    meeting_kinds: list[str] | tuple[str, ...] | None = None,
+    focus_label: str = "",
     request_text: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Persist a local digest as a task, assistant message and artifact."""
 
-    digest = build_digest(store, workspace_id, period, now=now)
+    digest = build_digest(
+        store,
+        workspace_id,
+        period,
+        sections=sections,
+        meeting_kinds=meeting_kinds,
+        focus_label=focus_label,
+        now=now,
+    )
     task = store.create_task(
         workspace_id,
         digest["title"],
@@ -516,8 +650,16 @@ def persist_digest(
             "deterministic": True,
             "digest": {
                 "period": digest["period"],
+                "configuration": digest["configuration"],
                 "counts": digest["counts"],
                 "references": digest["references"],
+            },
+            "llm_route": {
+                "requested_route": "local",
+                "actual_route": "local_command",
+                "provider_type": "local",
+                "policy_engine": "deterministic",
+                "content_transmitted": False,
             },
             "sources": source_references,
         },
@@ -543,6 +685,7 @@ def persist_digest(
         metadata={
             "origin": "structured_digest",
             "period": digest["period"],
+            "configuration": digest["configuration"],
             "local_only": True,
             "references": digest["references"],
         },

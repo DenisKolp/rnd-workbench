@@ -846,6 +846,8 @@ class WindowsPilotBackend:
         self._cancel_event: threading.Event | None = None
         self._worker: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._automation_lock = threading.Lock()
+        self.automation_thread: threading.Thread | None = None
         self._api_key = ""
         self._chat_factory = chat_factory
         self._chat: OpenAIChatClient | None = None
@@ -942,6 +944,33 @@ class WindowsPilotBackend:
                 daemon=True,
             )
             self._voice_loader.start()
+        self.automation_thread = threading.Thread(
+            target=self._automation_loop,
+            name="windows-automation-scheduler",
+            daemon=True,
+        )
+        self.automation_thread.start()
+
+    def _validated_automation_fields(
+        self,
+        command: dict[str, Any],
+    ) -> tuple[str, str, str]:
+        name = str(command.get("name") or "").strip()
+        prompt = str(command.get("prompt") or "").strip()
+        schedule = str(command.get("schedule") or "").strip()
+        if not name:
+            raise ValueError("Укажите название автоматизации")
+        if self.orchestrator.digest_request(prompt) is None:
+            raise ValueError(
+                "Windows-фон сейчас поддерживает только локальную команду /digest"
+            )
+        if self.store.is_event_schedule(schedule):
+            raise ValueError(
+                "В Windows pilot поддерживаются только расписания по времени"
+            )
+        if not schedule:
+            raise ValueError("Укажите расписание автоматизации")
+        return name, prompt, schedule
 
     def handle(self, command: dict[str, Any]) -> None:
         name = str(command.get("command") or "")
@@ -1059,6 +1088,43 @@ class WindowsPilotBackend:
             self.delete_artifact(command)
         elif name == "delete_source":
             self.delete_source(command)
+        elif name == "create_automation":
+            automation_name, prompt, schedule = self._validated_automation_fields(
+                command
+            )
+            automation = self.store.create_automation(
+                self.current_workspace_id,
+                automation_name,
+                prompt,
+                schedule,
+            )
+            self.emitter.emit("automation_saved", id=automation["id"])
+            self.emit_snapshot()
+        elif name == "update_automation":
+            automation_id = str(command.get("id") or "")
+            automation_name, prompt, schedule = self._validated_automation_fields(
+                command
+            )
+            self.store.update_automation(
+                automation_id,
+                name=automation_name,
+                prompt=prompt,
+                schedule=schedule,
+            )
+            self.emitter.emit("automation_saved", id=automation_id)
+            self.emit_snapshot()
+        elif name == "toggle_automation":
+            automation_id = str(command.get("id") or "")
+            self.store.set_automation_enabled(
+                automation_id,
+                bool(command.get("enabled")),
+            )
+            self.emit_snapshot()
+        elif name == "delete_automation":
+            automation_id = str(command.get("id") or "")
+            self.store.delete_automation(automation_id)
+            self.emitter.emit("entity_deleted", entity="automation", id=automation_id)
+            self.emit_snapshot()
         elif name in {"clear", "new_task"}:
             title = str(command.get("title") or "Новая задача").strip() or "Новая задача"
             task = self.store.create_task(self.current_workspace_id, title)
@@ -2714,10 +2780,11 @@ class WindowsPilotBackend:
             return
         try:
             plan_command = self.orchestrator.plan_command(text)
+            digest_request = self.orchestrator.digest_request(text)
         except ValueError as exc:
             self.emitter.emit("error", message=str(exc))
             return
-        if plan_command is None:
+        if plan_command is None and digest_request is None:
             runtime = self._runtime()
             if not runtime["ready"]:
                 self.emitter.emit("error", message=runtime["detail"])
@@ -2853,6 +2920,98 @@ class WindowsPilotBackend:
         self.emit_snapshot()
         return True
 
+    def _try_digest_request(
+        self,
+        text: str,
+        cancel_event: threading.Event,
+        *,
+        spoken: bool,
+        started: float,
+        voice_turn_started_at: float | None,
+    ) -> bool:
+        """Generate one configured local digest without selecting an LLM route."""
+
+        try:
+            request = self.orchestrator.digest_request(text)
+        except ValueError as exc:
+            self.emitter.emit("error", message=str(exc))
+            return True
+        if request is None:
+            return False
+        digest = self.orchestrator.persist_digest(
+            self.current_workspace_id,
+            str(request["period"]),
+            sections=list(request["sections"]),
+            meeting_kinds=list(request["meeting_kinds"]),
+            focus_label=str(request["focus_label"]),
+            request_text=text,
+        )
+        task = digest["task"]
+        self.current_workspace_id = str(task["workspace_id"])
+        self.current_task_id = str(task["id"])
+        reply = str(digest["text"])
+        spoken_title = str(digest["title"]).replace(" · ", " по теме ")
+        spoken_reply = f"{spoken_title} сохранён в материалах."
+        route = {
+            "requested_route": "local",
+            "actual_route": "local_command",
+            "provider_type": "local",
+            "policy_engine": "deterministic",
+            "content_transmitted": False,
+        }
+        speech_result: dict[str, Any] = {
+            "spoken": False,
+            "spoken_text": spoken_reply if spoken else "",
+            "tts_error": None,
+            "first_audio_seconds": None,
+            "tts_rtf": None,
+        }
+        self.emitter.emit("user", text=text, task_id=self.current_task_id)
+        self.emitter.emit(
+            "assistant_start",
+            task_id=self.current_task_id,
+            skill="Дайджест",
+            sources=list(digest["source_references"]),
+            llm_route=route,
+        )
+        self.emitter.emit("state", state="thinking", detail="Собираю дайджест…")
+        self.emitter.emit("assistant_delta", text=reply)
+        if spoken and not cancel_event.is_set():
+            self._stream_voice_speech(
+                spoken_reply,
+                cancel_event,
+                speech_result,
+                timing_origin=voice_turn_started_at or started,
+            )
+        elapsed = round(time.perf_counter() - started, 3)
+        performance: dict[str, float] = {"total_seconds": elapsed}
+        if speech_result["first_audio_seconds"] is not None:
+            performance["first_audio_seconds"] = float(
+                speech_result["first_audio_seconds"]
+            )
+        if speech_result["tts_rtf"] is not None:
+            performance["tts_rtf"] = float(speech_result["tts_rtf"])
+        self._record_pilot_usage(
+            "voice_turn_completed" if spoken else "text_turn_completed"
+        )
+        self.emitter.emit("digest_generated", digest=digest)
+        self.emitter.emit(
+            "assistant_end",
+            text=reply,
+            seconds=elapsed,
+            interrupted=False,
+            task_id=self.current_task_id,
+            artifact=digest["artifact"],
+            spoken=bool(speech_result["spoken"]),
+            spoken_text=str(speech_result["spoken_text"]),
+            tts_error=speech_result["tts_error"],
+            llm_route=route,
+            performance=performance,
+            quick_actions=[],
+        )
+        self.emit_snapshot()
+        return True
+
     def cancel_turn(self) -> None:
         with self._lock:
             cancel_event = self._cancel_event
@@ -2907,6 +3066,14 @@ class WindowsPilotBackend:
 
         try:
             if self._try_task_plan_request(
+                text,
+                cancel_event,
+                spoken=spoken,
+                started=started,
+                voice_turn_started_at=voice_turn_started_at,
+            ):
+                return
+            if self._try_digest_request(
                 text,
                 cancel_event,
                 spoken=spoken,
@@ -3461,6 +3628,18 @@ class WindowsPilotBackend:
             "text_chat_available": True,
             "full_window_available": True,
             "full_feature_parity": False,
+            "background_execution": {
+                "mode": "session_tray",
+                "ready": bool(
+                    self.automation_thread is not None
+                    and self.automation_thread.is_alive()
+                ),
+                "starts_with_os": False,
+                "detail": (
+                    "Локальные дайджесты выполняются по расписанию, пока "
+                    "RnD Workbench работает в области уведомлений Windows"
+                ),
+            },
             "java_core_policy": self._core_policy.diagnostics(),
             "java_action_journal": {
                 **self.integration_hub.action_journal_diagnostics(),
@@ -3483,6 +3662,86 @@ class WindowsPilotBackend:
             snapshot["pilot_metrics"].get("usage", {}),
         )
         self.emitter.emit("snapshot", data=snapshot)
+
+    def _automation_loop(self) -> None:
+        """Run deterministic local digest schedules during this app session."""
+
+        while not self.shutdown_event.wait(10):
+            if self._busy():
+                continue
+            for automation in self.store.due_automations():
+                if self.shutdown_event.is_set():
+                    return
+                if self._busy():
+                    break
+                self._run_automation(automation)
+
+    def _run_automation(self, automation: dict[str, Any]) -> None:
+        if not self._automation_lock.acquire(blocking=False):
+            return
+        try:
+            self.emitter.emit(
+                "automation_started",
+                id=automation["id"],
+                name=automation["name"],
+            )
+            request = self.orchestrator.digest_request(str(automation["prompt"]))
+            if request is None:
+                raise ValueError(
+                    "В фоновом режиме Windows сейчас выполняются только "
+                    "локальные команды /digest"
+                )
+            workspace_id = str(
+                automation.get("workspace_id") or self.current_workspace_id
+            )
+            digest = self.orchestrator.persist_digest(
+                workspace_id,
+                str(request["period"]),
+                sections=list(request["sections"]),
+                meeting_kinds=list(request["meeting_kinds"]),
+                focus_label=str(request["focus_label"]),
+                request_text=str(automation["prompt"]),
+            )
+            self.store.mark_automation_run(
+                str(automation["id"]),
+                str(automation["schedule"]),
+            )
+            self.store.add_inbox(
+                workspace_id,
+                "automation",
+                f"Автоматизация завершена: {automation['name']}",
+                f"Сохранён локальный результат «{digest['title']}».",
+                priority=2,
+                source_ref=str(digest["artifact"]["id"]),
+            )
+            self.emitter.emit(
+                "automation_completed",
+                id=automation["id"],
+                task_id=digest["task"]["id"],
+                deterministic=True,
+                local_event="digest",
+            )
+            self.emit_snapshot()
+        except BaseException as exc:
+            self.store.mark_automation_run(
+                str(automation["id"]),
+                str(automation["schedule"]),
+            )
+            self.store.add_inbox(
+                automation.get("workspace_id") or self.current_workspace_id,
+                "error",
+                f"Ошибка автоматизации: {automation['name']}",
+                str(exc),
+                priority=3,
+            )
+            self.emitter.emit(
+                "automation_failed",
+                id=automation["id"],
+                message=str(exc),
+            )
+            self.emit_snapshot()
+        finally:
+            self._automation_lock.release()
 
     def _restore_chat(self) -> None:
         settings = self.store.settings()
@@ -3547,7 +3806,8 @@ class WindowsPilotBackend:
     def _busy(self) -> bool:
         with self._lock:
             return bool(
-                (self._worker is not None and self._worker.is_alive())
+                self._automation_lock.locked()
+                or (self._worker is not None and self._worker.is_alive())
                 or (
                     self._voice_qualification_worker is not None
                     and self._voice_qualification_worker.is_alive()

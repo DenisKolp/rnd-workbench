@@ -349,6 +349,18 @@ def test_primary_icon_controls_have_explicit_accessibility_names() -> None:
     assert '.accessibilityLabel("Ошибка озвучивания. \\(message)")' in source
 
 
+def test_macos_automation_copy_exposes_configured_digest_without_long_cancel_button() -> None:
+    source = SWIFT_SOURCE.read_text(encoding="utf-8")
+
+    assert "/digest неделя только риски и поручения" in source
+    assert 'Button("Отмена")' in source
+    assert 'Button("Отменить изменение")' not in source
+    automation_view = source.split("struct AutomationsView: View", maxsplit=1)[1].split(
+        "struct ApprovalsView: View", maxsplit=1
+    )[0]
+    assert automation_view.count(".fixedSize(horizontal: false, vertical: true)") >= 2
+
+
 def test_compact_expand_action_reuses_single_full_window() -> None:
     source = SWIFT_SOURCE.read_text(encoding="utf-8")
     compact = source.split("struct CompactAssistantView: View", maxsplit=1)[1].split(
@@ -439,7 +451,7 @@ def test_macos_build_links_global_input_frameworks_and_advances_build_number() -
     assert "--compress=zip-6" in build
     assert "verify_java_core_bridge.py" in build
     assert "--external-models-enabled" in build
-    assert "<string>21</string>" in plist
+    assert "<string>22</string>" in plist
 
 
 def test_macos_app_launches_bundled_java_policy_and_shows_safe_fallback() -> None:

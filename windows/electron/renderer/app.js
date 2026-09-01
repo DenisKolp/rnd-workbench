@@ -21,6 +21,7 @@ const state = {
   javaFallbackNotified: false,
   artifactHistory: null,
   composerSuggestionIndex: 0,
+  automationEditingId: "",
   ptt: {
     sttAvailable: false,
     sttDetail: "Faster-Whisper не настроен",
@@ -1026,7 +1027,7 @@ function renderMessages() {
     const empty = textNode("div", "empty-state", "");
     empty.append(
       textNode("strong", "", "Рабочий контекст готов"),
-      textNode("p", "", "Подключите локальную или корпоративную модель и задайте первый вопрос."),
+      textNode("p", "", "Начните с вопроса или /digest. Для свободного чата подключите локальную либо корпоративную модель."),
     );
     container.append(empty);
     return;
@@ -1169,6 +1170,129 @@ function renderContextLibrary() {
   }
 }
 
+function digestPrompt(period, focus) {
+  const suffixes = {
+    risks_actions: " только риски и поручения",
+    tasks: " только задачи",
+    meetings: " только встречи",
+    inbox: " только уведомления",
+    artifacts: " только материалы",
+  };
+  return `/digest ${period}${suffixes[focus] || ""}`;
+}
+
+function digestFormValues(prompt) {
+  const normalized = String(prompt || "").toLocaleLowerCase("ru");
+  const period = /\b(?:weekly|недел)/.test(normalized)
+    ? "weekly"
+    : /\b(?:evening|вечер|итоги дня)/.test(normalized)
+      ? "evening"
+      : "morning";
+  let focus = "all";
+  if (/риск/.test(normalized) && /поручен/.test(normalized)) focus = "risks_actions";
+  else if (/только\s+задач/.test(normalized)) focus = "tasks";
+  else if (/только\s+встреч/.test(normalized)) focus = "meetings";
+  else if (/только\s+уведомлен/.test(normalized)) focus = "inbox";
+  else if (/только\s+материал/.test(normalized)) focus = "artifacts";
+  return { period, focus };
+}
+
+function resetAutomationForm() {
+  state.automationEditingId = "";
+  byId("automationName").value = "Рабочий дайджест";
+  byId("automationPeriod").value = "morning";
+  byId("automationFocus").value = "all";
+  byId("automationSchedule").value = "ежедневно 09:00";
+  byId("automationSaveButton").textContent = "Добавить";
+  byId("automationCancelButton").hidden = true;
+}
+
+function editAutomation(automation) {
+  if (!automation || typeof automation !== "object") return;
+  const values = digestFormValues(automation.prompt);
+  state.automationEditingId = String(automation.id || "");
+  byId("automationName").value = String(automation.name || "Рабочий дайджест");
+  byId("automationPeriod").value = values.period;
+  byId("automationFocus").value = values.focus;
+  byId("automationSchedule").value = String(automation.schedule || "ежедневно 09:00");
+  byId("automationSaveButton").textContent = "Сохранить";
+  byId("automationCancelButton").hidden = false;
+  byId("automationName").focus();
+}
+
+function saveAutomation(event) {
+  event.preventDefault();
+  const name = byId("automationName").value.trim();
+  const schedule = byId("automationSchedule").value.trim();
+  if (!name || !schedule) return;
+  const payload = {
+    name,
+    schedule,
+    prompt: digestPrompt(byId("automationPeriod").value, byId("automationFocus").value),
+  };
+  if (state.automationEditingId) {
+    sendCommand("update_automation", { id: state.automationEditingId, ...payload });
+  } else {
+    sendCommand("create_automation", payload);
+  }
+  resetAutomationForm();
+}
+
+function renderAutomations() {
+  const automations = Array.isArray(state.snapshot.automations)
+    ? state.snapshot.automations
+    : [];
+  byId("automationCount").textContent = String(automations.length);
+  const background = state.platform.background_execution || {};
+  byId("automationBackgroundStatus").textContent = String(
+    background.detail
+      || "Локальные дайджесты работают, пока RnD Workbench запущен.",
+  );
+  const container = byId("automationList");
+  container.replaceChildren();
+  for (const automation of automations) {
+    const row = textNode("div", "automation-row", "");
+    const heading = textNode("div", "automation-row-heading", "");
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = Boolean(automation.enabled);
+    toggle.setAttribute("aria-label", `Включить автоматизацию ${String(automation.name || "")}`);
+    toggle.addEventListener("change", () => {
+      sendCommand("toggle_automation", {
+        id: automation.id,
+        enabled: toggle.checked,
+      });
+    });
+    const copy = textNode("div", "automation-row-copy", "");
+    copy.append(
+      textNode("strong", "", String(automation.name || "Автоматизация")),
+      textNode(
+        "span",
+        "",
+        `${String(automation.schedule || "Без расписания")} · ${String(automation.prompt || "")}`,
+      ),
+    );
+    heading.append(toggle, copy);
+    const actions = textNode("div", "automation-row-actions", "");
+    const edit = textNode("button", "secondary-button", "Изменить");
+    edit.type = "button";
+    edit.addEventListener("click", () => editAutomation(automation));
+    const remove = textNode("button", "text-danger-button", "Удалить");
+    remove.type = "button";
+    remove.addEventListener("click", () => {
+      if (window.confirm(`Удалить автоматизацию «${String(automation.name || "Автоматизация")}»?`)) {
+        sendCommand("delete_automation", { id: automation.id });
+      }
+    });
+    actions.append(edit, remove);
+    row.append(heading, actions);
+    container.append(row);
+  }
+  if (!container.childElementCount) {
+    container.append(textNode("span", "automation-empty", "Автоматизаций пока нет"));
+  }
+}
+
 function openSourceFragment(source) {
   if (!source || typeof source !== "object") return;
   byId("sourceFragmentTitle").textContent = String(source.title || "Источник");
@@ -1269,6 +1393,11 @@ function renderApprovals() {
   const approvals = Array.isArray(state.snapshot.approvals)
     ? state.snapshot.approvals.filter((item) => ["pending", "error"].includes(String(item.status || "")))
     : [];
+  const card = byId("approvalCard");
+  const previousCount = Number(card.dataset.count || 0);
+  if (approvals.length > previousCount) card.open = true;
+  if (!approvals.length) card.open = false;
+  card.dataset.count = String(approvals.length);
   byId("approvalCount").textContent = String(approvals.length);
   if (!approvals.length) {
     container.append(textNode("span", "approval-empty", "Нет действий, требующих внимания"));
@@ -1627,6 +1756,7 @@ function renderSnapshot() {
   renderApprovals();
   renderMeetings();
   renderContextLibrary();
+  renderAutomations();
   renderComposerSuggestions();
   renderRuntime();
   renderVoiceCapability();
@@ -1750,6 +1880,28 @@ function handleBackendEvent(event) {
         state.metric = "План задачи обновлён";
         byId("metricsLabel").textContent = state.metric;
         toast(String(event.result?.message || state.metric));
+        break;
+      case "digest_generated":
+        state.metric = "Дайджест сохранён";
+        byId("metricsLabel").textContent = state.metric;
+        toast(String(event.digest?.title || state.metric));
+        break;
+      case "automation_saved":
+        toast("Автоматизация сохранена");
+        break;
+      case "automation_started":
+        state.metric = "Выполняется автоматизация…";
+        byId("metricsLabel").textContent = state.metric;
+        break;
+      case "automation_completed":
+        state.metric = "Автоматизация завершена";
+        byId("metricsLabel").textContent = state.metric;
+        toast(state.metric);
+        break;
+      case "automation_failed":
+        state.metric = "Ошибка автоматизации";
+        byId("metricsLabel").textContent = state.metric;
+        toast(String(event.message || state.metric));
         break;
       case "source_fragment":
         openSourceFragment(event.source);
@@ -2194,6 +2346,8 @@ byId("pilotUsefulnessRating").addEventListener("change", (event) => {
     sendCommand("set_pilot_feedback", { usefulness_rating: rating });
   }
 });
+byId("automationForm").addEventListener("submit", saveAutomation);
+byId("automationCancelButton").addEventListener("click", resetAutomationForm);
 byId("sendButton").addEventListener("click", sendText);
 byId("stopButton").addEventListener("click", () => {
   audioPlayer.stop("user_stop");

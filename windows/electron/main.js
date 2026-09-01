@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, dialog, ipcMain, screen } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, screen, Tray } = require("electron");
 const { spawn } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
@@ -11,6 +11,7 @@ const COMPACT_SIZE = Object.freeze({ width: 410, height: 420 });
 const FULL_SIZE = Object.freeze({ width: 1120, height: 760 });
 
 let mainWindow = null;
+let tray = null;
 let backendProcess = null;
 let backendReady = false;
 let backendPttAvailable = false;
@@ -316,9 +317,46 @@ function createMainWindow() {
     placeCompactWindow();
     mainWindow.show();
   });
+  mainWindow.on("close", (event) => {
+    if (app.isQuitting || !tray) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+function showMainWindow() {
+  if (!mainWindow) createMainWindow();
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function createTray() {
+  if (tray) return;
+  try {
+    // On Windows an executable path resolves to its embedded application icon.
+    tray = new Tray(process.execPath);
+  } catch (_error) {
+    tray = null;
+    return;
+  }
+  tray.setToolTip("RnD Workbench · локальный помощник");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "Открыть RnD Workbench", click: showMainWindow },
+    { type: "separator" },
+    {
+      label: "Выход",
+      click: () => {
+        app.isQuitting = true;
+        app.quit();
+      },
+    },
+  ]));
+  tray.on("double-click", showMainWindow);
 }
 
 function placeCompactWindow() {
@@ -639,7 +677,9 @@ ipcMain.on("window:minimize", (event) => {
   if (isTrustedRendererEvent(event)) mainWindow?.minimize();
 });
 ipcMain.on("window:close", (event) => {
-  if (isTrustedRendererEvent(event)) mainWindow?.close();
+  if (!isTrustedRendererEvent(event)) return;
+  if (tray) mainWindow?.hide();
+  else mainWindow?.close();
 });
 ipcMain.on("backend:command", (event, payload) => {
   if (isTrustedRendererEvent(event)) sendBackendCommand(payload);
@@ -710,12 +750,10 @@ if (!lock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
   });
   app.whenReady().then(() => {
+    createTray();
     createMainWindow();
     startBackend();
   });
@@ -726,8 +764,12 @@ if (!lock) {
 
 app.on("before-quit", () => {
   app.isQuitting = true;
+  tray?.destroy();
+  tray = null;
   stopPttHotkey();
   stopBackend();
 });
 
-app.on("window-all-closed", () => app.quit());
+app.on("window-all-closed", () => {
+  if (!tray) app.quit();
+});

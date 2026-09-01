@@ -501,6 +501,171 @@ def test_windows_voice_plan_command_uses_one_local_tts_reply_without_llm(tmp_pat
     assert [event["type"] for event in emitter.events].count("audio_end") == 1
 
 
+def test_windows_configured_digest_is_local_and_does_not_require_an_llm(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)
+    backend.store.create_task(
+        backend.current_workspace_id,
+        "Проверить пилот",
+        classification="confidential",
+    )
+
+    backend._run_text_turn(
+        "/digest неделя только риски и поручения",
+        threading.Event(),
+    )
+
+    generated = next(
+        event for event in emitter.events if event["type"] == "digest_generated"
+    )
+    digest = generated["digest"]
+    assert digest["configuration"] == {
+        "sections": ["meeting_items"],
+        "meeting_kinds": ["action", "risk"],
+        "focus_label": "поручения и риски",
+    }
+    assert [section["id"] for section in digest["sections"]] == [
+        "meeting_items"
+    ]
+    answer = next(
+        event for event in emitter.events if event["type"] == "assistant_end"
+    )
+    assert answer["llm_route"]["actual_route"] == "local_command"
+    assert answer["llm_route"]["content_transmitted"] is False
+    assert answer["artifact"]["id"] == digest["artifact"]["id"]
+    assert not any(event["type"] == "error" for event in emitter.events)
+
+
+def test_windows_voice_digest_uses_one_short_tts_reply_and_full_chat_text(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    emitter = CapturingEmitter()
+    voice = FakeVoiceRuntime()
+    backend = WindowsPilotBackend(
+        tmp_path / "assistant.sqlite3",
+        emitter,
+        voice_runtime=voice,
+    )
+
+    backend._run_text_turn(
+        "/digest утро только задачи",
+        threading.Event(),
+        spoken=True,
+        voice_turn_started_at=time.perf_counter(),
+    )
+
+    answer = next(
+        event for event in emitter.events if event["type"] == "assistant_end"
+    )
+    assert answer["text"].startswith("# Утренний дайджест · задачи")
+    assert voice.spoken_texts == [
+        "Утренний дайджест по теме задачи сохранён в материалах."
+    ]
+    assert answer["spoken_text"] == voice.spoken_texts[0]
+    assert len(answer["spoken_text"]) < len(answer["text"])
+    assert [event["type"] for event in emitter.events].count("audio_start") == 1
+
+
+def test_windows_invalid_digest_scope_shows_help_before_model_setup(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)
+
+    backend.submit_text("/digest неделя только настроение")
+
+    error = next(event for event in reversed(emitter.events) if event["type"] == "error")
+    assert "После «только»" in str(error["message"])
+    assert "Настройте" not in str(error["message"])
+    assert backend._worker is None
+
+
+def test_windows_digest_automation_crud_and_session_scheduler_contract(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)
+
+    backend.handle(
+        {
+            "command": "create_automation",
+            "name": "Риски пилота",
+            "prompt": "/digest weekly только риски и поручения",
+            "schedule": "ежедневно 09:00",
+        }
+    )
+    automation = backend.store.snapshot()["automations"][0]
+    backend._run_automation(automation)
+
+    updated = backend.store._rows(
+        "SELECT * FROM automations WHERE id=?",
+        (automation["id"],),
+    )[0]
+    assert updated["last_run_at"]
+    assert updated["next_run_at"]
+    assert any(event["type"] == "automation_completed" for event in emitter.events)
+    assert any(
+        item["kind"] == "automation"
+        for item in backend.store.snapshot()["inbox"]
+    )
+    backend.handle(
+        {
+            "command": "update_automation",
+            "id": automation["id"],
+            "name": "Риски недели",
+            "prompt": "/digest weekly только риски",
+            "schedule": "каждую пятницу 17:00",
+        }
+    )
+    backend.handle(
+        {
+            "command": "toggle_automation",
+            "id": automation["id"],
+            "enabled": False,
+        }
+    )
+    disabled = backend.store._rows(
+        "SELECT name, enabled FROM automations WHERE id=?",
+        (automation["id"],),
+    )[0]
+    assert disabled == {"name": "Риски недели", "enabled": 0}
+    backend.handle({"command": "delete_automation", "id": automation["id"]})
+    assert not backend.store.snapshot()["automations"]
+
+    with pytest.raises(ValueError, match="только локальную команду /digest"):
+        backend.handle(
+            {
+                "command": "create_automation",
+                "name": "Удалённая задача",
+                "prompt": "Отправь письмо",
+                "schedule": "ежедневно 09:00",
+            }
+        )
+    with pytest.raises(ValueError, match="только расписания по времени"):
+        backend.handle(
+            {
+                "command": "create_automation",
+                "name": "Событийный дайджест",
+                "prompt": "/digest weekly",
+                "schedule": "при новом источнике",
+            }
+        )
+
+
+def test_windows_snapshot_states_background_limit_without_claiming_os_autostart(
+    tmp_path,
+) -> None:  # noqa: ANN001
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)
+
+    backend.emit_snapshot()
+
+    background = emitter.events[-1]["data"]["platform"]["background_execution"]
+    assert background["mode"] == "session_tray"
+    assert background["starts_with_os"] is False
+    assert "области уведомлений Windows" in background["detail"]
+
+
 def test_windows_pilot_feedback_command_is_bounded_and_content_free(tmp_path) -> None:
     emitter = CapturingEmitter()
     backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)

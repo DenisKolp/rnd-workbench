@@ -25,6 +25,7 @@ from .workflows import (
     mutate_task_plan as apply_task_plan_command,
     normalize_digest_period,
     parse_digest_command,
+    parse_digest_request,
     parse_task_plan_command,
     persist_digest as persist_structured_digest,
 )
@@ -420,6 +421,14 @@ class LocalOrchestrator:
         return parse_digest_command(text, now=now)
 
     @staticmethod
+    def digest_request(
+        text: str,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        return parse_digest_request(text, now=now)
+
+    @staticmethod
     def digest_period(value: str) -> str:
         return normalize_digest_period(value)
 
@@ -428,12 +437,18 @@ class LocalOrchestrator:
         workspace_id: str,
         period: str,
         *,
+        sections: list[str] | tuple[str, ...] | None = None,
+        meeting_kinds: list[str] | tuple[str, ...] | None = None,
+        focus_label: str = "",
         now: datetime | None = None,
     ) -> dict[str, Any]:
         return build_structured_digest(
             self.store,
             workspace_id,
             period,
+            sections=sections,
+            meeting_kinds=meeting_kinds,
+            focus_label=focus_label,
             now=now,
         )
 
@@ -442,6 +457,9 @@ class LocalOrchestrator:
         workspace_id: str,
         period: str,
         *,
+        sections: list[str] | tuple[str, ...] | None = None,
+        meeting_kinds: list[str] | tuple[str, ...] | None = None,
+        focus_label: str = "",
         request_text: str | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
@@ -449,6 +467,9 @@ class LocalOrchestrator:
             self.store,
             workspace_id,
             period,
+            sections=sections,
+            meeting_kinds=meeting_kinds,
+            focus_label=focus_label,
             request_text=request_text,
             now=now,
         )

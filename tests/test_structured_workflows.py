@@ -14,6 +14,7 @@ from voice_assistant.workflows import (
     build_digest,
     mutate_task_plan,
     parse_digest_command,
+    parse_digest_request,
     parse_task_plan_command,
     persist_digest,
 )
@@ -216,6 +217,62 @@ def test_digest_period_command_and_persistence_are_deterministic(
     assert version["metadata"]["references"] == persisted["references"]
 
 
+def test_digest_focus_is_bounded_persisted_and_filters_sections(
+    tmp_path: Path,
+) -> None:
+    request = parse_digest_request(
+        "/digest неделя только риски и поручения"
+    )
+    assert request == {
+        "period": "weekly",
+        "sections": ["meeting_items"],
+        "meeting_kinds": ["action", "risk"],
+        "focus_label": "поручения и риски",
+    }
+    assert parse_digest_request("/digest утро только задачи") == {
+        "period": "morning",
+        "sections": ["tasks"],
+        "meeting_kinds": [],
+        "focus_label": "задачи",
+    }
+    with pytest.raises(ValueError, match="После «только»"):
+        parse_digest_request("/digest неделя только настроение")
+
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    seeded = _seed_digest_data(store)
+    persisted = persist_digest(
+        store,
+        str(seeded["workspace_id"]),
+        str(request["period"]),
+        sections=list(request["sections"]),
+        meeting_kinds=list(request["meeting_kinds"]),
+        focus_label=str(request["focus_label"]),
+        request_text="/digest неделя только риски и поручения",
+        now=datetime.now(UTC),
+    )
+
+    assert [section["id"] for section in persisted["sections"]] == [
+        "meeting_items"
+    ]
+    assert {
+        reference["status"]
+        for reference in persisted["references"]
+        if reference["type"] == "meeting_item"
+    }
+    assert all(
+        reference["title"].startswith(("Поручение:", "Риск:"))
+        for reference in persisted["references"]
+    )
+    messages = store.messages(str(persisted["task"]["id"]))
+    metadata = json.loads(messages[-1]["metadata"])
+    assert metadata["digest"]["configuration"] == persisted["configuration"]
+    assert metadata["llm_route"]["content_transmitted"] is False
+    artifact_metadata = store.artifact_versions(
+        str(persisted["artifact"]["id"])
+    )[0]["metadata"]
+    assert artifact_metadata["configuration"] == persisted["configuration"]
+
+
 def test_ui_plan_and_digest_commands_bypass_llm(capsys, tmp_path: Path) -> None:
     store = AssistantStore(tmp_path / "assistant.sqlite3")
     workspace_id = store.default_workspace_id()
@@ -246,6 +303,45 @@ def test_ui_plan_and_digest_commands_bypass_llm(capsys, tmp_path: Path) -> None:
         "task_plan",
         "digest",
     }
+
+
+def test_macos_backend_speaks_one_short_digest_acknowledgement(
+    capsys,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    store = AssistantStore(tmp_path / "assistant.sqlite3")
+    backend = UIBackend(Config.defaults(), EventEmitter(), store)
+    spoken: list[str] = []
+
+    class FakeTTS:
+        @staticmethod
+        def synthesize(text, *, cancel_event):  # noqa: ANN001, ANN201
+            assert not cancel_event.is_set()
+            spoken.append(text)
+            yield b"audio"
+
+    class FakePlayer:
+        @staticmethod
+        def play(chunks, *, cancel_event, on_start):  # noqa: ANN001, ANN201
+            assert list(chunks) == [b"audio"]
+            assert not cancel_event.is_set()
+            on_start()
+
+    class DeterministicAssistant:
+        tts = FakeTTS()
+        player = FakePlayer()
+
+    backend.assistant = DeterministicAssistant()  # type: ignore[assignment]
+    backend._text_turn("/digest утро только задачи", speak=True)
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    answer = next(event for event in events if event["type"] == "assistant_end")
+    assert answer["text"].startswith("# Утренний дайджест · задачи")
+    assert spoken == [
+        "Утренний дайджест по теме задачи сохранён в материалах."
+    ]
+    assert answer["spoken_text"] == spoken[0]
+    assert len(answer["spoken_text"]) < len(answer["text"])
 
 
 def test_digest_automation_uses_structured_local_path(capsys, tmp_path: Path) -> None:

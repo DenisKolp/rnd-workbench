@@ -2366,14 +2366,17 @@ class UIBackend:
             return True
 
         try:
-            period = self.orchestrator.digest_command(text)
+            digest_request = self.orchestrator.digest_request(text)
         except ValueError as exc:
             self.emitter.emit("error", message=str(exc))
             return True
-        if period is None:
+        if digest_request is None:
             return False
         self._run_structured_digest(
-            period,
+            str(digest_request["period"]),
+            sections=list(digest_request["sections"]),
+            meeting_kinds=list(digest_request["meeting_kinds"]),
+            focus_label=str(digest_request["focus_label"]),
             request_text=text,
             speak=speak,
             cancel_event=cancel_event,
@@ -2385,6 +2388,9 @@ class UIBackend:
         self,
         period: str,
         *,
+        sections: list[str] | None = None,
+        meeting_kinds: list[str] | None = None,
+        focus_label: str = "",
         request_text: str,
         speak: bool,
         cancel_event: threading.Event | None = None,
@@ -2393,6 +2399,9 @@ class UIBackend:
         digest = self.orchestrator.persist_digest(
             self.current_workspace_id,
             period,
+            sections=sections,
+            meeting_kinds=meeting_kinds,
+            focus_label=focus_label,
             request_text=request_text,
         )
         task = digest["task"]
@@ -2410,6 +2419,10 @@ class UIBackend:
             cancel_event=cancel_event,
             event="digest",
             usage_event=usage_event,
+            spoken_reply=(
+                f"{str(digest['title']).replace(' · ', ' по теме ')} "
+                "сохранён в материалах."
+            ),
         )
         return digest
 
@@ -2426,6 +2439,7 @@ class UIBackend:
         cancel_event: threading.Event | None,
         event: str,
         usage_event: str | None = None,
+        spoken_reply: str | None = None,
     ) -> None:
         started = time.perf_counter()
         cancel_event = cancel_event or threading.Event()
@@ -2441,9 +2455,10 @@ class UIBackend:
         spoken = False
         spoken_text = ""
         tts_error: str | None = None
-        if speak and reply and not cancel_event.is_set():
+        speech_source = spoken_reply or reply
+        if speak and speech_source and not cancel_event.is_set():
             spoken_text = concise_speech_text(
-                reply,
+                speech_source,
                 max_chars=self.config.assistant.max_tts_chars,
                 max_segments=self.config.assistant.max_tts_segments,
             )
@@ -3917,14 +3932,17 @@ class UIBackend:
             return
         task_id = None
         try:
-            digest_period = self.orchestrator.digest_command(automation["prompt"])
-            if digest_period is not None:
+            digest_request = self.orchestrator.digest_request(automation["prompt"])
+            if digest_request is not None:
                 workspace_id = str(
                     automation.get("workspace_id") or self.current_workspace_id
                 )
                 digest = self.orchestrator.persist_digest(
                     workspace_id,
-                    digest_period,
+                    str(digest_request["period"]),
+                    sections=list(digest_request["sections"]),
+                    meeting_kinds=list(digest_request["meeting_kinds"]),
+                    focus_label=str(digest_request["focus_label"]),
                     request_text=automation["prompt"],
                 )
                 task_id = str(digest["task"]["id"])
