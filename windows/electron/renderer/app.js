@@ -39,7 +39,11 @@ function sendCommand(command, payload = {}) {
 function setMeetingImporting(active, kind = state.meetingImportKind) {
   state.meetingImporting = Boolean(active);
   const activeKind = String(kind || "package");
-  if (state.meetingImporting) state.meetingImportKind = activeKind;
+  if (state.meetingImporting) {
+    state.meetingImportKind = activeKind;
+    const addMenu = byId("meetingAddMenu");
+    if (addMenu) addMenu.open = false;
+  }
   const audioButton = byId("meetingAudioImportButton");
   const transcriptButton = byId("meetingTranscriptImportButton");
   const packageButton = byId("synapseImportButton");
@@ -57,7 +61,7 @@ function setMeetingImporting(active, kind = state.meetingImportKind) {
     transcriptButton.disabled = state.meetingImporting;
     transcriptButton.textContent = state.meetingImporting && activeKind === "transcript"
       ? "Импортирую транскрипт…"
-      : "Готовый транскрипт";
+      : "Транскрипт";
   }
   if (packageButton) {
     packageButton.disabled = state.meetingImporting;
@@ -953,6 +957,83 @@ function renderApprovals() {
   }
 }
 
+function renderMeetings() {
+  const card = byId("meetingContextCard");
+  if (!card) return;
+  const meetings = Array.isArray(state.snapshot.meetings) ? state.snapshot.meetings : [];
+  card.hidden = meetings.length === 0;
+  if (!meetings.length) return;
+
+  const currentId = String(state.snapshot.current_meeting_id || meetings[0]?.id || "");
+  const selected = meetings.find((meeting) => String(meeting.id) === currentId) || meetings[0];
+  const select = byId("meetingSelect");
+  select.replaceChildren();
+  for (const meeting of meetings) {
+    const option = document.createElement("option");
+    option.value = String(meeting.id || "");
+    const date = String(meeting.occurred_at || meeting.created_at || "").slice(0, 10);
+    option.textContent = `${date ? `${date} · ` : ""}${String(meeting.title || "Встреча")}`;
+    select.append(option);
+  }
+  select.value = String(selected.id || "");
+
+  const counts = selected.item_counts && typeof selected.item_counts === "object"
+    ? selected.item_counts
+    : {};
+  const openAttention = Number(selected.open_attention || 0);
+  byId("meetingContextMeta").textContent = openAttention > 0
+    ? `Требует внимания: ${openAttention}`
+    : "Анализ готов";
+  byId("meetingSummary").textContent = String(
+    selected.summary || "Решения, поручения, риски и вопросы извлечены из транскрипта.",
+  );
+  const countLabels = [
+    ["decision", "Решения"],
+    ["action", "Поручения"],
+    ["risk", "Риски"],
+    ["question", "Вопросы"],
+  ];
+  const countContainer = byId("meetingCounts");
+  countContainer.replaceChildren();
+  for (const [kind, label] of countLabels) {
+    const count = Number(counts[kind] || 0);
+    if (count > 0) countContainer.append(textNode("span", "", `${label}: ${count}`));
+  }
+
+  const kindLabels = {
+    decision: "Решение",
+    action: "Поручение",
+    commitment: "Обязательство",
+    risk: "Риск",
+    question: "Вопрос",
+    topic: "Тема",
+  };
+  const itemList = byId("meetingItemList");
+  itemList.replaceChildren();
+  const items = Array.isArray(state.snapshot.meeting_items)
+    ? state.snapshot.meeting_items.slice(0, 5)
+    : [];
+  for (const item of items) {
+    const row = document.createElement("li");
+    row.append(
+      textNode("span", "", kindLabels[String(item.kind)] || "Пункт"),
+      textNode("span", "", String(item.text || "")),
+    );
+    itemList.append(row);
+  }
+  if (!items.length) {
+    const row = document.createElement("li");
+    row.append(textNode("span", "", "Пункт"), textNode("span", "", "Данные ещё не извлечены."));
+    itemList.append(row);
+  }
+
+  const briefing = String(state.snapshot.meeting_briefing || "").trim();
+  byId("meetingBriefingText").textContent = briefing || "Брифинг ещё не подготовлен.";
+  byId("prepareMeetingBriefingButton").textContent = briefing
+    ? "Обновить брифинг"
+    : "Подготовить брифинг";
+}
+
 function renderRuntime() {
   const ready = Boolean(state.runtime.ready);
   const provider = state.runtime.provider_type;
@@ -1193,6 +1274,7 @@ function renderSnapshot() {
   renderMessages();
   renderTasks();
   renderApprovals();
+  renderMeetings();
   renderRuntime();
   renderVoiceCapability();
   renderPilotMetrics();
@@ -1352,6 +1434,18 @@ function handleBackendEvent(event) {
         state.metric = "Синхронизация eXpress не выполнена";
         byId("metricsLabel").textContent = state.metric;
         toast(String(event.message || state.metric));
+        break;
+      case "meeting_briefing_ready":
+        state.metric = "Брифинг встречи готов";
+        byId("metricsLabel").textContent = state.metric;
+        break;
+      case "meeting_briefing_error":
+        toast("Встреча сохранена, но брифинг нужно подготовить повторно");
+        break;
+      case "meeting_deleted":
+        state.metric = "Встреча удалена";
+        byId("metricsLabel").textContent = state.metric;
+        toast(state.metric);
         break;
       case "meeting_transcript_imported":
         setMeetingImporting(false);
@@ -1666,6 +1760,21 @@ byId("meetingAudioImportButton").addEventListener("click", () => void chooseMeet
 byId("meetingTranscriptImportButton").addEventListener("click", () => void chooseMeetingTranscript());
 byId("synapseImportButton").addEventListener("click", () => void chooseSynapsePackage());
 byId("expressSyncButton").addEventListener("click", syncExpressMeetings);
+byId("meetingSelect").addEventListener("change", (event) => {
+  sendCommand("select_meeting", { meeting_id: String(event.target.value || "") });
+});
+byId("prepareMeetingBriefingButton").addEventListener("click", () => {
+  const meetingId = String(byId("meetingSelect").value || "");
+  if (meetingId) sendCommand("prepare_briefing", { meeting_id: meetingId });
+});
+byId("deleteMeetingButton").addEventListener("click", () => {
+  const meetingId = String(byId("meetingSelect").value || "");
+  const option = byId("meetingSelect").selectedOptions[0];
+  const title = String(option?.textContent || "эту встречу");
+  if (meetingId && window.confirm(`Удалить «${title}» и связанные материалы?`)) {
+    sendCommand("delete_meeting", { meeting_id: meetingId });
+  }
+});
 byId("exportPilotMetricsButton").addEventListener("click", () => void exportPilotMetrics());
 byId("pilotPreflightButton").addEventListener("click", () => sendCommand("pilot_preflight"));
 byId("pilotOnboardingButton").addEventListener("click", performPilotOnboardingAction);

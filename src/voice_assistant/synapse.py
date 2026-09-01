@@ -1019,6 +1019,7 @@ class SynapseMeetingPackageImporter:
             meeting["items"],
         )
         supporting_context = self._supporting_context(relations)
+        meeting_scope = self.store.meeting_context_scope(meeting["id"])
         return {
             "status": status,
             "package_id": provenance["external_id"],
@@ -1038,6 +1039,11 @@ class SynapseMeetingPackageImporter:
             "next_meeting": {
                 "mode": "local_draft",
                 "agenda": agenda,
+                "context_scope": {
+                    key: value
+                    for key, value in meeting_scope.items()
+                    if key != "meetings"
+                },
             },
             "proposals": proposals,
             "provenance": {

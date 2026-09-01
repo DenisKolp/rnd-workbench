@@ -408,6 +408,7 @@ def test_windows_full_window_imports_express_transcript_or_package_through_trust
     assert '>Аудиозапись</button>' in html
     assert '"Аудиозапись"' in renderer
     assert 'id="meetingTranscriptImportButton"' in html
+    assert '>Транскрипт</button>' in html
     assert 'id="synapseImportButton"' in html
     assert '>ZIP с контекстом</button>' in html
     assert "аудиозапись, готовый транскрипт или ZIP" in html
@@ -420,6 +421,31 @@ def test_windows_full_window_imports_express_transcript_or_package_through_trust
     assert 'case "meeting_audio_import_error":' in renderer
     assert 'case "synapse_package_imported":' in renderer
     assert 'case "synapse_package_import_error":' in renderer
+
+
+def test_windows_meeting_result_is_visible_without_overloading_import_controls() -> None:
+    renderer = RENDERER.read_text(encoding="utf-8")
+    html = HTML.read_text(encoding="utf-8")
+    styles = (ROOT / "windows" / "electron" / "renderer" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'class="meeting-add-menu"' in html
+    assert '<summary>Добавить файл</summary>' in html
+    assert 'id="meetingContextCard"' in html
+    assert 'id="meetingSelect"' in html
+    assert 'id="meetingBriefingText"' in html
+    assert 'id="prepareMeetingBriefingButton"' in html
+    assert 'id="deleteMeetingButton"' in html
+    assert "function renderMeetings()" in renderer
+    assert 'sendCommand("select_meeting"' in renderer
+    assert 'sendCommand("prepare_briefing"' in renderer
+    assert 'sendCommand("delete_meeting"' in renderer
+    assert 'case "meeting_briefing_ready":' in renderer
+    assert 'case "meeting_deleted":' in renderer
+    assert ".meeting-add-options" in styles
+    assert ".meeting-context-actions" in styles
+    assert "white-space: normal" in styles
 
 
 def test_renderer_uses_short_mode_copy_and_safe_local_settings_default() -> None:

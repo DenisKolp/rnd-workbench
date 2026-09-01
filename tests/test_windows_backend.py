@@ -812,7 +812,54 @@ def test_downloaded_express_transcript_imports_as_analyzed_meeting(tmp_path) -> 
     assert imported["meeting_id"]
     assert backend.store.get_source(imported["source"]["id"])["kind"] == "meeting"
     assert backend.store.get_meeting(imported["meeting_id"], include_items=True)["items"]
+    assert backend.current_meeting_id == imported["meeting_id"]
+    assert "Брифинг к следующей встрече" in backend._meeting_briefing
+    readiness = next(
+        event for event in emitter.events if event["type"] == "meeting_briefing_ready"
+    )
+    assert readiness["meeting_id"] == imported["meeting_id"]
+    assert readiness["scope_mode"] == "single_meeting"
+    snapshot = [event for event in emitter.events if event["type"] == "snapshot"][-1][
+        "data"
+    ]
+    assert snapshot["current_meeting_id"] == imported["meeting_id"]
+    assert snapshot["meeting_items"]
+    assert "Открытые вопросы" in snapshot["meeting_briefing"]
     assert not any(event["type"] in {"user", "assistant_start"} for event in emitter.events)
+
+
+def test_windows_meeting_can_be_selected_briefed_and_deleted(tmp_path) -> None:
+    emitter = CapturingEmitter()
+    backend = WindowsPilotBackend(tmp_path / "assistant.sqlite3", emitter)
+    source = backend.store.add_source(
+        backend.current_workspace_id,
+        "meeting",
+        "Проектный комитет",
+        "Анна: Решили продолжить пилот. Иван подготовит план до пятницы.",
+    )
+    meeting = backend.store.analyze_meeting(source["id"])
+
+    backend.handle({"command": "select_meeting", "meeting_id": meeting["id"]})
+    backend.handle({"command": "prepare_briefing", "meeting_id": meeting["id"]})
+
+    snapshot = [event for event in emitter.events if event["type"] == "snapshot"][-1][
+        "data"
+    ]
+    assert snapshot["current_meeting_id"] == meeting["id"]
+    assert "Брифинг к следующей встрече" in snapshot["meeting_briefing"]
+
+    backend.handle({"command": "delete_meeting", "meeting_id": meeting["id"]})
+
+    with pytest.raises(KeyError):
+        backend.store.get_meeting(meeting["id"])
+    deleted = next(event for event in emitter.events if event["type"] == "meeting_deleted")
+    assert deleted["meeting_id"] == meeting["id"]
+    assert deleted["deleted_sources"] == 1
+    final_snapshot = [
+        event for event in emitter.events if event["type"] == "snapshot"
+    ][-1]["data"]
+    assert final_snapshot["current_meeting_id"] is None
+    assert final_snapshot["meetings"] == []
 
 
 def test_express_transcript_import_rejects_unknown_format_before_worker(tmp_path) -> None:

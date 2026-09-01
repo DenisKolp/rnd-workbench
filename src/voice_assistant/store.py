@@ -20,6 +20,15 @@ from .automation import next_run
 
 SCHEMA_VERSION = 13
 
+EXPRESS_MEETING_SERIES_METADATA_KEYS = (
+    "series_id",
+    "meeting_series_id",
+    "recurring_meeting_id",
+    "conference_series_id",
+    "calendar_series_id",
+    "group_chat_id",
+)
+
 PILOT_METRIC_UNITS = {
     "listen_ready_seconds": "seconds",
     "stt_compute_seconds": "seconds",
@@ -2653,6 +2662,97 @@ class AssistantStore:
             raise KeyError(f"Для источника нет встречи: {source_id}")
         return self.get_meeting(rows[0]["id"], include_items=include_items)
 
+    def meeting_context_scope(
+        self,
+        meeting_id: str,
+        *,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Return an explicit, provenance-backed scope for meeting preparation.
+
+        eXpress packages may carry a stable series/chat identifier in manifest
+        metadata.  Only that exact identifier is allowed to join meetings into
+        one preparation scope.  When it is absent, the scope deliberately stays
+        on the selected meeting; title similarity is too ambiguous for a
+        corporate assistant and can leak unrelated context into a briefing.
+        """
+
+        if not 1 <= limit <= 500:
+            raise ValueError("limit должен быть от 1 до 500")
+        selected = self.get_meeting(meeting_id)
+        selected_identity = self._meeting_series_identity(selected["source_id"])
+        selected_epoch = self._timeline_epoch(
+            str(selected.get("occurred_at") or selected["created_at"])
+        )
+        candidates = self.list_meetings(
+            selected["workspace_id"],
+            limit=500,
+        )
+        if selected_identity is None:
+            scoped = [selected]
+            mode = "single_meeting"
+            metadata_key = None
+            scope_id = f"meeting:{selected['id']}"
+        else:
+            metadata_key, identity_value = selected_identity
+            related = [
+                candidate
+                for candidate in candidates
+                if self._meeting_series_identity(candidate["source_id"])
+                == selected_identity
+                and candidate["id"] != selected["id"]
+                and self._timeline_epoch(
+                    str(candidate.get("occurred_at") or candidate["created_at"])
+                )
+                <= selected_epoch
+            ]
+            related.sort(
+                key=lambda item: (
+                    self._timeline_epoch(
+                        str(item.get("occurred_at") or item["created_at"])
+                    ),
+                    item["created_at"],
+                    item["id"],
+                ),
+                reverse=True,
+            )
+            scoped = [selected, *related]
+            mode = "express_series"
+            scope_id = "express-series:" + hashlib.sha256(
+                f"{metadata_key}\0{identity_value}".encode("utf-8")
+            ).hexdigest()[:24]
+        scoped = scoped[:limit]
+        return {
+            "mode": mode,
+            "scope_id": scope_id,
+            "metadata_key": metadata_key,
+            "meeting_count": len(scoped),
+            "selected_meeting_id": selected["id"],
+            "meetings": scoped,
+        }
+
+    def _meeting_series_identity(self, source_id: str) -> tuple[str, str] | None:
+        source = self.get_source(source_id)
+        metadata = source.get("metadata")
+        if not isinstance(metadata, dict):
+            return None
+        provenance = metadata.get("provenance")
+        if not isinstance(provenance, dict) or (
+            str(provenance.get("source_system") or "").casefold() != "synapse"
+        ):
+            return None
+        package_metadata = metadata.get("package_metadata")
+        if not isinstance(package_metadata, dict):
+            return None
+        for key in EXPRESS_MEETING_SERIES_METADATA_KEYS:
+            value = package_metadata.get(key)
+            if not isinstance(value, str):
+                continue
+            normalized = unicodedata.normalize("NFKC", value).strip().casefold()
+            if normalized:
+                return key, normalized
+        return None
+
     def list_meetings(
         self,
         workspace_id: str,
@@ -3163,20 +3263,38 @@ class AssistantStore:
         self,
         workspace_id: str,
         *,
+        focus_meeting_id: str | None = None,
         person: str | None = None,
         since: str | None = None,
         limit: int = 10,
     ) -> dict[str, Any]:
-        meetings = self.list_meetings(
-            workspace_id, person=person, period_start=since, limit=limit
-        )
+        scope: dict[str, Any] | None = None
+        if focus_meeting_id:
+            scope = self.meeting_context_scope(focus_meeting_id, limit=limit)
+            if scope["meetings"][0]["workspace_id"] != workspace_id:
+                raise ValueError("Выбранная встреча относится к другому пространству")
+            meetings = list(scope["meetings"])
+            if since:
+                since_epoch = self._timeline_epoch(since)
+                meetings = [
+                    meeting
+                    for meeting in meetings
+                    if meeting["id"] == focus_meeting_id
+                    or self._timeline_epoch(
+                        str(meeting.get("occurred_at") or meeting["created_at"])
+                    ) >= since_epoch
+                ]
+        else:
+            meetings = self.list_meetings(
+                workspace_id, person=person, period_start=since, limit=limit
+            )
         meeting_ids = {meeting["id"] for meeting in meetings}
         items = [
             item
             for item in self.meeting_items(workspace_id=workspace_id, person=person)
             if item["meeting_id"] in meeting_ids
         ]
-        return {
+        result = {
             "workspace": self.get_workspace(workspace_id),
             "person": person,
             "meetings": meetings,
@@ -3189,6 +3307,17 @@ class AssistantStore:
             "risks": [item for item in items if item["kind"] == "risk" and item["status"] == "open"],
             "questions": [item for item in items if item["kind"] == "question" and item["status"] == "open"],
         }
+        if scope is not None:
+            result["scope"] = {
+                key: value for key, value in scope.items() if key != "meetings"
+            }
+            result["previous_meeting"] = meetings[1] if len(meetings) > 1 else None
+            result["comparison"] = (
+                self.compare_meetings(meetings[1]["id"], meetings[0]["id"])
+                if len(meetings) > 1
+                else None
+            )
+        return result
 
     def remember(
         self,

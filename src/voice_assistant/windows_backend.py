@@ -45,6 +45,7 @@ from .java_core import (
     JavaCoreUnavailable,
 )
 from .integrations import SafeIntegrationHub
+from .meeting_briefing import render_meeting_briefing
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
 from .preflight import PilotPreflightInputs, build_pilot_preflight
 from .onboarding import build_pilot_onboarding
@@ -832,6 +833,10 @@ class WindowsPilotBackend:
         snapshot = self.store.snapshot()
         self.current_workspace_id = str(snapshot["current_workspace_id"])
         self.current_task_id = snapshot.get("current_task_id")
+        self.current_meeting_id = (
+            str(snapshot["meetings"][0]["id"]) if snapshot["meetings"] else None
+        )
+        self._meeting_briefing = ""
         self.shutdown_event = threading.Event()
         self._cancel_event: threading.Event | None = None
         self._worker: threading.Thread | None = None
@@ -986,6 +991,28 @@ class WindowsPilotBackend:
             self.set_pilot_feedback(command)
         elif name == "sync_express_meetings":
             self.sync_express_meetings()
+        elif name == "select_meeting":
+            meeting = self.store.get_meeting(
+                str(command.get("meeting_id") or command.get("id") or "")
+            )
+            self.current_workspace_id = str(meeting["workspace_id"])
+            self.current_meeting_id = str(meeting["id"])
+            self._meeting_briefing = ""
+            self.emit_snapshot()
+        elif name == "meeting_item_status":
+            item = self.store.update_meeting_item_status(
+                str(command.get("item_id") or command.get("id") or ""),
+                str(command.get("status") or "open"),
+            )
+            self.current_meeting_id = str(item["meeting_id"])
+            self._meeting_briefing = ""
+            self.emit_snapshot()
+        elif name == "prepare_briefing":
+            self._prepare_meeting_briefing(
+                str(command.get("meeting_id") or command.get("id") or ""),
+                record_usage=True,
+            )
+            self.emit_snapshot()
         elif name == "ptt_capabilities":
             self.emit_dictation_capability()
         elif name == "ptt_dictation_start":
@@ -1036,6 +1063,24 @@ class WindowsPilotBackend:
             if self.current_task_id == task_id:
                 self.current_task_id = None
             self.emitter.emit("entity_deleted", entity="task", id=task_id)
+            self.emit_snapshot()
+        elif name == "delete_meeting":
+            meeting_id = str(command.get("meeting_id") or command.get("id") or "")
+            if not meeting_id:
+                raise ValueError("Не указана встреча для удаления")
+            if self._busy():
+                raise RuntimeError("Дождитесь завершения текущей операции")
+            meeting = self.store.get_meeting(meeting_id)
+            result = self.store.delete_source_package_aware(str(meeting["source_id"]))
+            if self.current_meeting_id in set(result["deleted_meeting_ids"]):
+                self.current_meeting_id = None
+                self._meeting_briefing = ""
+            self.emitter.emit(
+                "meeting_deleted",
+                meeting_id=meeting_id,
+                deleted_sources=int(result["deleted_sources"]),
+                trashed_files=int(result["trashed_files"]),
+            )
             self.emit_snapshot()
         elif name == "ping":
             self.emitter.emit("pong")
@@ -1136,6 +1181,62 @@ class WindowsPilotBackend:
             ),
         )
 
+    def _prepare_meeting_briefing(
+        self,
+        meeting_id: str,
+        *,
+        record_usage: bool,
+    ) -> dict[str, Any]:
+        meeting = self.store.get_meeting(meeting_id, include_items=True)
+        self.current_workspace_id = str(meeting["workspace_id"])
+        self.current_meeting_id = str(meeting["id"])
+        data = self.store.briefing_data(
+            meeting["workspace_id"],
+            focus_meeting_id=meeting_id,
+            limit=12,
+        )
+        self._meeting_briefing = render_meeting_briefing(
+            self.store,
+            self.orchestrator,
+            meeting,
+            data,
+        )
+        if record_usage:
+            self._record_pilot_usage("meeting_briefing_prepared")
+        scope = data.get("scope") if isinstance(data.get("scope"), dict) else {}
+        readiness = {
+            "meeting_id": meeting_id,
+            "briefing_ready": True,
+            "scope_mode": scope.get("mode", "single_meeting"),
+            "meeting_count": int(scope.get("meeting_count") or 1),
+            "has_previous_meeting": data.get("previous_meeting") is not None,
+        }
+        self.emitter.emit("meeting_briefing_ready", **readiness)
+        return readiness
+
+    def _auto_prepare_meeting_briefing(
+        self,
+        meeting_id: str,
+        *,
+        record_usage: bool,
+    ) -> dict[str, Any] | None:
+        """Best-effort derived result; a saved import must remain successful."""
+
+        try:
+            return self._prepare_meeting_briefing(
+                meeting_id,
+                record_usage=record_usage,
+            )
+        except (KeyError, OSError, ValueError):
+            self._meeting_briefing = ""
+            self.emitter.emit(
+                "meeting_briefing_error",
+                code="BRIEFING_DERIVATION_FAILED",
+                meeting_id=meeting_id,
+                retryable=True,
+            )
+            return None
+
     def sync_express_meetings(self) -> None:
         diagnostics = self.express_intake.diagnostics()
         if not diagnostics["configured"]:
@@ -1190,6 +1291,12 @@ class WindowsPilotBackend:
                 last = imported[-1]
                 self.current_workspace_id = workspace_id
                 self.current_meeting_id = str(last["meeting_id"])
+                readiness = self._auto_prepare_meeting_briefing(
+                    self.current_meeting_id,
+                    record_usage=added > 0,
+                )
+            else:
+                readiness = None
             self.emitter.emit(
                 "express_sync_completed",
                 processed=int(result["processed"]),
@@ -1197,6 +1304,7 @@ class WindowsPilotBackend:
                 deduplicated=int(result["deduplicated"]),
                 has_more=bool(result["has_more"]),
                 connector=result["connector"],
+                readiness=readiness,
             )
             self.emit_snapshot()
         except ExpressIntakeError as error:
@@ -1420,6 +1528,11 @@ class WindowsPilotBackend:
                 workspace_id=workspace_id,
             )
             self.current_workspace_id = str(source["workspace_id"])
+            if source.get("meeting_id"):
+                self._auto_prepare_meeting_briefing(
+                    str(source["meeting_id"]),
+                    record_usage=True,
+                )
             self._record_pilot_usage("meeting_imported")
             self.emitter.emit(
                 "meeting_audio_imported",
@@ -1460,6 +1573,11 @@ class WindowsPilotBackend:
                 kind="meeting",
             )
             self.current_workspace_id = str(source["workspace_id"])
+            if source.get("meeting_id"):
+                self._auto_prepare_meeting_briefing(
+                    str(source["meeting_id"]),
+                    record_usage=True,
+                )
             self._record_pilot_usage("meeting_imported")
             self.emitter.emit(
                 "meeting_transcript_imported",
@@ -1500,6 +1618,10 @@ class WindowsPilotBackend:
             )
             primary = self.store.get_source(str(result["source_id"]))
             self.current_workspace_id = str(primary["workspace_id"])
+            self._auto_prepare_meeting_briefing(
+                str(result["meeting_id"]),
+                record_usage=result["status"] == "imported",
+            )
             if result["status"] == "imported":
                 self._record_pilot_usage("meeting_imported")
             self.emitter.emit("synapse_package_imported", result=result)
@@ -2859,8 +2981,19 @@ class WindowsPilotBackend:
         snapshot = self.store.snapshot(
             workspace_id=self.current_workspace_id,
             task_id=self.current_task_id,
+            meeting_id=self.current_meeting_id,
         )
         self.current_task_id = snapshot["current_task_id"]
+        if snapshot["current_meeting_id"] is None and snapshot["meetings"]:
+            self.current_meeting_id = str(snapshot["meetings"][0]["id"])
+            snapshot = self.store.snapshot(
+                workspace_id=self.current_workspace_id,
+                task_id=self.current_task_id,
+                meeting_id=self.current_meeting_id,
+            )
+        else:
+            self.current_meeting_id = snapshot["current_meeting_id"]
+        snapshot["meeting_briefing"] = self._meeting_briefing
         runtime = self._runtime()
         snapshot["llm"] = runtime
         snapshot["model"] = f"{runtime['model']} · {runtime['route_label']}"

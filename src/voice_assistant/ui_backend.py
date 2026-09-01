@@ -4,7 +4,7 @@ import argparse
 from collections import deque
 from contextlib import redirect_stdout
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -35,6 +35,7 @@ from .java_core import (
     JavaCoreUnavailable,
 )
 from .integrations import SafeIntegrationHub
+from .meeting_briefing import render_meeting_briefing
 from .orchestrator import LocalOrchestrator, RoutingPolicyError, TurnContext
 from .preflight import PilotPreflightInputs, build_pilot_preflight
 from .onboarding import build_pilot_onboarding
@@ -336,7 +337,11 @@ class UIBackend:
                 self._record_pilot_usage("meeting_imported")
                 self.current_meeting_id = source.get("meeting_id")
                 self._meeting_diff = []
-                self._meeting_briefing = None
+                if self.current_meeting_id:
+                    self._auto_prepare_meeting_briefing(
+                        str(self.current_meeting_id),
+                        record_usage=True,
+                    )
                 self._register_meeting_event(source)
                 self._sync_meeting_attention()
             self.emit_snapshot()
@@ -385,7 +390,10 @@ class UIBackend:
             self._set_current_workspace(str(primary["workspace_id"]))
             self.current_meeting_id = str(result["meeting_id"])
             self._meeting_diff = []
-            self._meeting_briefing = None
+            self._auto_prepare_meeting_briefing(
+                self.current_meeting_id,
+                record_usage=result["status"] == "imported",
+            )
             primary["meeting_id"] = result["meeting_id"]
             if result["status"] == "imported":
                 self._record_pilot_usage("meeting_imported")
@@ -442,10 +450,9 @@ class UIBackend:
             meeting = self.store.get_meeting(meeting_id, include_items=True)
             self._set_current_workspace(meeting["workspace_id"])
             self.current_meeting_id = meeting_id
-            since = (datetime.now(UTC) - timedelta(days=180)).isoformat()
             briefing = self.store.briefing_data(
                 meeting["workspace_id"],
-                since=since,
+                focus_meeting_id=meeting_id,
                 limit=12,
             )
             self._meeting_briefing = self._render_meeting_briefing(meeting, briefing)
@@ -836,7 +843,11 @@ class UIBackend:
             self._record_pilot_usage("meeting_imported")
             self.current_meeting_id = source.get("meeting_id")
             self._meeting_diff = []
-            self._meeting_briefing = None
+            if self.current_meeting_id:
+                self._auto_prepare_meeting_briefing(
+                    str(self.current_meeting_id),
+                    record_usage=True,
+                )
             self._register_meeting_event(source)
             self._sync_meeting_attention()
             event_automations = self.store.event_automations(source["workspace_id"])
@@ -921,8 +932,13 @@ class UIBackend:
                 self._set_current_workspace(workspace_id)
                 self.current_meeting_id = str(last["meeting_id"])
                 self._meeting_diff = []
-                self._meeting_briefing = None
+                readiness = self._auto_prepare_meeting_briefing(
+                    self.current_meeting_id,
+                    record_usage=added > 0,
+                )
                 self._sync_meeting_attention()
+            else:
+                readiness = None
             self.emitter.emit(
                 "express_sync_completed",
                 processed=int(result["processed"]),
@@ -930,6 +946,7 @@ class UIBackend:
                 deduplicated=int(result["deduplicated"]),
                 has_more=bool(result["has_more"]),
                 connector=result["connector"],
+                readiness=readiness,
             )
             self.emit_snapshot()
         except ExpressIntakeError as error:
@@ -3408,65 +3425,50 @@ class UIBackend:
         meeting: dict[str, Any],
         data: dict[str, Any],
     ) -> str:
-        lines = [f"Брифинг к следующей встрече по «{meeting['title']}».\n"]
+        return render_meeting_briefing(
+            self.store,
+            self.orchestrator,
+            meeting,
+            data,
+        )
 
-        def section(title: str, items: list[dict[str, Any]], limit: int = 6) -> None:
-            lines.append(title)
-            if not items:
-                lines.append("— Нет данных.")
-                return
-            for item in items[-limit:]:
-                owner = f" — {item['owner']}" if item.get("owner") else ""
-                due = f", срок {item['due_at']}" if item.get("due_at") else ""
-                lines.append(f"— {item['text']}{owner}{due}")
-
-        section("Последние решения", data["recent_decisions"])
-        section("Незакрытые поручения и обязательства", data["open_actions"])
-        section("Риски", data["risks"])
-        section("Открытые вопросы", data["questions"])
+    def _auto_prepare_meeting_briefing(
+        self,
+        meeting_id: str,
+        *,
+        record_usage: bool,
+    ) -> dict[str, Any] | None:
+        """Derive a briefing without invalidating an already durable import."""
 
         try:
-            synapse_context = self.orchestrator.synapse_meeting_context(
-                str(meeting["source_id"])
+            meeting = self.store.get_meeting(meeting_id, include_items=True)
+            data = self.store.briefing_data(
+                meeting["workspace_id"],
+                focus_meeting_id=meeting_id,
+                limit=12,
             )
+            self._meeting_briefing = self._render_meeting_briefing(meeting, data)
+            if record_usage:
+                self._record_pilot_usage("meeting_briefing_prepared")
+            scope = data.get("scope") if isinstance(data.get("scope"), dict) else {}
+            readiness = {
+                "meeting_id": meeting_id,
+                "briefing_ready": True,
+                "scope_mode": scope.get("mode", "single_meeting"),
+                "meeting_count": int(scope.get("meeting_count") or 1),
+                "has_previous_meeting": data.get("previous_meeting") is not None,
+            }
+            self.emitter.emit("meeting_briefing_ready", **readiness)
+            return readiness
         except (KeyError, OSError, ValueError):
-            synapse_context = None
-        if synapse_context:
-            supporting = synapse_context["supporting_context"]
-            supporting_items = [
-                item
-                for item in [
-                    supporting.get("description"),
-                    *supporting.get("attachments", []),
-                ]
-                if item
-            ]
-            if supporting_items:
-                lines.append(
-                    "Дополнительный контекст eXpress (Синапс) "
-                    "— не смешан с фактами транскрипта"
-                )
-                for item in supporting_items:
-                    provenance = item["provenance"]
-                    relative_path = provenance["part"].get("relative_path", "")
-                    lines.append(
-                        f"— {item['title']} "
-                        f"[источник {provenance['source_id']}; {relative_path}]: "
-                        f"{item['snippet']}"
-                    )
-
-        topics = list(dict.fromkeys(item.get("topic") for item in meeting["items"] if item.get("topic")))
-        if topics:
-            lines.append("История тем")
-            for topic in topics[:5]:
-                timeline = self.store.topic_timeline(
-                    meeting["workspace_id"], topic, limit=4
-                )
-                lines.append(f"— {topic}: {len(timeline)} связанных упоминаний")
-                for item in timeline[-2:]:
-                    date = (item.get("occurred_at") or item["created_at"])[:10]
-                    lines.append(f"  {date}: {item['text']}")
-        return "\n".join(lines)
+            self._meeting_briefing = None
+            self.emitter.emit(
+                "meeting_briefing_error",
+                code="BRIEFING_DERIVATION_FAILED",
+                meeting_id=meeting_id,
+                retryable=True,
+            )
+            return None
 
     def emit_snapshot(self) -> None:
         snapshot = self.store.snapshot(

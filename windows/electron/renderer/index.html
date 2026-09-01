@@ -89,12 +89,38 @@
             <strong>Встреча из eXpress (Синапс)</strong>
             <p>Добавьте аудиозапись, готовый транскрипт или ZIP с описанием и вложениями.</p>
             <div class="meeting-import-actions">
-              <button class="secondary-button" id="meetingAudioImportButton" type="button">Аудиозапись</button>
-              <button class="secondary-button" id="meetingTranscriptImportButton" type="button">Готовый транскрипт</button>
-              <button class="secondary-button" id="synapseImportButton" type="button">ZIP с контекстом</button>
               <button class="secondary-button" id="expressSyncButton" type="button" hidden>Получить из eXpress</button>
+              <details class="meeting-add-menu" id="meetingAddMenu">
+                <summary>Добавить файл</summary>
+                <div class="meeting-add-options">
+                  <button class="secondary-button" id="meetingAudioImportButton" type="button">Аудиозапись</button>
+                  <button class="secondary-button" id="meetingTranscriptImportButton" type="button">Транскрипт</button>
+                  <button class="secondary-button" id="synapseImportButton" type="button">ZIP с контекстом</button>
+                </div>
+              </details>
             </div>
           </div>
+          <section class="meeting-context-card" id="meetingContextCard" aria-labelledby="meetingContextTitle" hidden>
+            <div class="meeting-context-heading">
+              <div>
+                <strong id="meetingContextTitle">Контекст встречи</strong>
+                <span id="meetingContextMeta">Анализ готов</span>
+              </div>
+              <label class="sr-only" for="meetingSelect">Выбранная встреча</label>
+              <select id="meetingSelect" aria-label="Выбранная встреча"></select>
+            </div>
+            <p id="meetingSummary">Решения и поручения появятся после импорта.</p>
+            <div class="meeting-counts" id="meetingCounts" aria-label="Состав анализа"></div>
+            <ul class="meeting-items" id="meetingItemList"></ul>
+            <details class="meeting-briefing" id="meetingBriefingDetails">
+              <summary>Брифинг к следующей встрече</summary>
+              <pre id="meetingBriefingText">Подготовьте брифинг, когда понадобится.</pre>
+            </details>
+            <div class="meeting-context-actions">
+              <button class="secondary-button" id="prepareMeetingBriefingButton" type="button">Подготовить брифинг</button>
+              <button class="text-danger-button" id="deleteMeetingButton" type="button">Удалить</button>
+            </div>
+          </section>
           <div class="approval-card">
             <div class="approval-heading">
               <strong>Согласования</strong>

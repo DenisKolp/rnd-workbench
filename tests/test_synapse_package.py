@@ -113,6 +113,16 @@ def zip_package(directory: Path, target: Path) -> Path:
     return target
 
 
+def set_meeting_time(directory: Path, occurred_at: str) -> None:
+    manifest_path = directory / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["meeting"]["occurred_at"] = occurred_at
+    manifest_path.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 def create_quick_bundle(root: Path) -> Path:
     root.mkdir(parents=True)
     (root / "attachments").mkdir()
@@ -183,6 +193,13 @@ def test_import_builds_enriched_traceable_context_and_truthful_gate(tmp_path: Pa
         "questions": 1,
     }
     assert result["next_meeting"]["agenda"]
+    assert result["next_meeting"]["context_scope"] == {
+        "mode": "single_meeting",
+        "scope_id": f"meeting:{result['meeting_id']}",
+        "metadata_key": None,
+        "meeting_count": 1,
+        "selected_meeting_id": result["meeting_id"],
+    }
     assert len(result["proposals"]) == 4
     assert all(item["execution_mode"] == "draft_only" for item in result["proposals"])
     assert all(item["external_system"] is None for item in result["proposals"])
@@ -220,6 +237,97 @@ def test_import_builds_enriched_traceable_context_and_truthful_gate(tmp_path: Pa
     audit = store._rows("SELECT * FROM audit_log WHERE action='synapse.package.import'")
     assert len(audit) == 1
     assert audit[0]["status"] == "local_mock"
+
+
+def test_explicit_express_series_scopes_next_meeting_context_without_title_guessing(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    orchestrator = LocalOrchestrator(store)
+    first_package = create_package(
+        tmp_path / "series-first",
+        package_id="series-first",
+        metadata={"group_chat_id": "team-room-42", "project": "pilot"},
+    )
+    set_meeting_time(first_package, "2026-08-24T10:00:00+03:00")
+    first = orchestrator.import_synapse_meeting_package(
+        first_package,
+        workspace_id=store.default_workspace_id(),
+    )
+    unrelated_package = create_package(
+        tmp_path / "same-title-unrelated",
+        package_id="same-title-unrelated",
+        metadata={"group_chat_id": "another-room", "project": "pilot"},
+    )
+    set_meeting_time(unrelated_package, "2026-08-30T10:00:00+03:00")
+    unrelated = orchestrator.import_synapse_meeting_package(
+        unrelated_package,
+        workspace_id=store.default_workspace_id(),
+    )
+    second_package = create_package(
+        tmp_path / "series-second",
+        package_id="series-second",
+        transcript=TRANSCRIPT.replace(
+            "Иван подготовит смету до 12 сентября.",
+            "Иван подготовит финальную смету до 15 сентября.",
+        ),
+        metadata={"group_chat_id": "TEAM-ROOM-42", "project": "pilot"},
+    )
+    set_meeting_time(second_package, "2026-08-31T10:00:00+03:00")
+    second = orchestrator.import_synapse_meeting_package(
+        second_package,
+        workspace_id=store.default_workspace_id(),
+    )
+
+    scope = second["next_meeting"]["context_scope"]
+    assert scope["mode"] == "express_series"
+    assert scope["metadata_key"] == "group_chat_id"
+    assert scope["meeting_count"] == 2
+    assert scope["scope_id"].startswith("express-series:")
+    briefing = store.briefing_data(
+        store.default_workspace_id(),
+        focus_meeting_id=second["meeting_id"],
+        limit=12,
+    )
+    assert [item["id"] for item in briefing["meetings"]] == [
+        second["meeting_id"],
+        first["meeting_id"],
+    ]
+    assert unrelated["meeting_id"] not in {
+        item["id"] for item in briefing["meetings"]
+    }
+    assert briefing["previous_meeting"]["id"] == first["meeting_id"]
+    assert briefing["comparison"] is not None
+    assert briefing["comparison"]["before"]["id"] == first["meeting_id"]
+    assert briefing["comparison"]["after"]["id"] == second["meeting_id"]
+
+
+def test_briefing_without_explicit_series_uses_only_selected_meeting(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    orchestrator = LocalOrchestrator(store)
+    first = orchestrator.import_synapse_meeting_package(
+        create_package(tmp_path / "standalone-first", package_id="standalone-first"),
+        workspace_id=store.default_workspace_id(),
+    )
+    second = orchestrator.import_synapse_meeting_package(
+        create_package(tmp_path / "standalone-second", package_id="standalone-second"),
+        workspace_id=store.default_workspace_id(),
+    )
+
+    briefing = store.briefing_data(
+        store.default_workspace_id(),
+        focus_meeting_id=second["meeting_id"],
+    )
+
+    assert [item["id"] for item in briefing["meetings"]] == [second["meeting_id"]]
+    assert first["meeting_id"] not in {
+        item["id"] for item in briefing["meetings"]
+    }
+    assert briefing["scope"]["mode"] == "single_meeting"
+    assert briefing["previous_meeting"] is None
+    assert briefing["comparison"] is None
 
 
 def test_quick_bundle_without_manifest_imports_description_and_attachments(
